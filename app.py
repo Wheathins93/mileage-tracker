@@ -1,6 +1,10 @@
 """
-Mileage Tracker — Flask Application
-A clean, lightweight mileage tracking app for bank branch travel.
+Mileage Tracker — Flask Application (v2)
+
+Changes from v1:
+- Multi-user support via browser cookie (user_id)
+- "Include return trip" creates two entries in one submit
+- All queries scoped to the requesting user
 """
 
 import csv
@@ -9,13 +13,18 @@ import calendar
 from datetime import datetime
 
 from flask import Flask, render_template, request, jsonify, Response
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border, Side, PatternFill, numbers
 
-from database import get_db, init_db, seed_sample_data
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+
+from database import get_db, init_db
 from routes_data import (
-    BRANCHES, MILEAGE_TABLE, REIMBURSEMENT_RATE,
-    get_routes, get_route_miles, calculate_reimbursement,
+    BRANCHES,
+    MILEAGE_TABLE,
+    REIMBURSEMENT_RATE,
+    get_routes,
+    get_route_miles,
+    calculate_reimbursement,
 )
 
 app = Flask(__name__)
@@ -26,7 +35,74 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 with app.app_context():
     init_db()
-    seed_sample_data()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def get_user_id():
+    """Read the user_id cookie set by the frontend."""
+    return request.cookies.get("user_id", "")
+
+
+def _validate_entry(data):
+    """Validate incoming entry data. Returns list of error strings."""
+    errors = []
+    if not data:
+        return ["No data provided"]
+    for field in (
+        "year", "month", "day",
+        "origin_branch", "destination_branch", "route_name",
+    ):
+        if not data.get(field):
+            errors.append(f"'{field}' is required")
+    if data.get("origin_branch") == data.get("destination_branch"):
+        errors.append("Origin and destination must be different")
+    return errors
+
+
+def _build_entry_values(data, user_id, *, override_origin=None,
+                        override_dest=None, override_route=None):
+    """Build the tuple of values for an INSERT or UPDATE.
+
+    Optional overrides let us reuse this for the return-trip entry.
+    Returns (values_tuple, error_string_or_None).
+    """
+    origin = override_origin or data["origin_branch"]
+    dest = override_dest or data["destination_branch"]
+    route_name = override_route or data["route_name"]
+
+    miles = get_route_miles(origin, dest, route_name)
+    if miles is None:
+        return None, "Invalid route selection"
+
+    reimbursement = calculate_reimbursement(miles)
+    year = int(data["year"])
+    month = int(data["month"])
+    day = int(data["day"])
+    date_str = f"{year}-{month:02d}-{day:02d}"
+
+    purpose = data.get("business_purpose", "").strip()
+    if not purpose or override_origin:
+        purpose = f"Mileage: {origin} to {dest} via {route_name}"
+
+    notes = data.get("notes", "").strip()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return (
+        user_id, year, month, day, date_str,
+        origin, dest, route_name,
+        miles, reimbursement, purpose, notes, now, now,
+    ), None
+
+
+INSERT_SQL = """
+    INSERT INTO entries
+        (user_id, year, month, day, date, origin_branch, destination_branch,
+         route_name, miles, reimbursement_amount, business_purpose, notes,
+         created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -51,8 +127,7 @@ def api_routes():
     destination = request.args.get("destination")
     if not origin or not destination:
         return jsonify([])
-    routes = get_routes(origin, destination)
-    return jsonify(routes)
+    return jsonify(get_routes(origin, destination))
 
 
 @app.route("/api/mileage-table")
@@ -77,11 +152,17 @@ def api_rate():
 
 
 # ---------------------------------------------------------------------------
-# API — CRUD
+# API — CRUD (all scoped to user_id)
 # ---------------------------------------------------------------------------
 @app.route("/api/entries")
 def api_entries():
-    """Get entries for a given month/year."""
+    """Get entries for a given month/year, scoped to the current user."""
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({"entries": [], "summary": {
+            "total_entries": 0, "total_miles": 0, "total_reimbursement": 0,
+        }})
+
     year = request.args.get("year", type=int)
     month = request.args.get("month", type=int)
     if not year or not month:
@@ -89,14 +170,18 @@ def api_entries():
 
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM entries WHERE year = ? AND month = ? ORDER BY day, id",
-        (year, month),
+        """SELECT * FROM entries
+           WHERE user_id = ? AND year = ? AND month = ?
+           ORDER BY day, id""",
+        (user_id, year, month),
     ).fetchall()
     conn.close()
 
     entries = [dict(r) for r in rows]
     total_miles = round(sum(e["miles"] for e in entries), 2)
-    total_reimbursement = round(sum(e["reimbursement_amount"] for e in entries), 2)
+    total_reimbursement = round(
+        sum(e["reimbursement_amount"] for e in entries), 2
+    )
 
     return jsonify({
         "entries": entries,
@@ -110,52 +195,79 @@ def api_entries():
 
 @app.route("/api/entries", methods=["POST"])
 def api_create_entry():
-    """Create a new mileage entry."""
+    """Create a new mileage entry, optionally with a return trip."""
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({"errors": ["Session not found. Please refresh."]}), 401
+
     data = request.get_json()
     errors = _validate_entry(data)
     if errors:
         return jsonify({"errors": errors}), 400
 
-    miles = get_route_miles(data["origin_branch"], data["destination_branch"], data["route_name"])
-    if miles is None:
-        return jsonify({"errors": ["Invalid route selection"]}), 400
-
-    reimbursement = calculate_reimbursement(miles)
-    year = int(data["year"])
-    month = int(data["month"])
-    day = int(data["day"])
-    date_str = f"{year}-{month:02d}-{day:02d}"
-    purpose = data.get("business_purpose", "").strip()
-    if not purpose:
-        purpose = f"Mileage: {data['origin_branch']} to {data['destination_branch']} via {data['route_name']}"
-    notes = data.get("notes", "").strip()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    values, err = _build_entry_values(data, user_id)
+    if err:
+        return jsonify({"errors": [err]}), 400
 
     conn = get_db()
-    cursor = conn.execute("""
-        INSERT INTO entries (year, month, day, date, origin_branch, destination_branch,
-            route_name, miles, reimbursement_amount, business_purpose, notes,
-            created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (year, month, day, date_str, data["origin_branch"], data["destination_branch"],
-          data["route_name"], miles, reimbursement, purpose, notes, now, now))
+    created = []
+
+    # --- Main entry ---
+    cursor = conn.execute(INSERT_SQL, values)
+    main_id = cursor.lastrowid
+    main_row = conn.execute(
+        "SELECT * FROM entries WHERE id = ?", (main_id,)
+    ).fetchone()
+    created.append(dict(main_row))
+
+    # --- Return trip (if requested) ---
+    if data.get("include_return"):
+        return_routes = get_routes(
+            data["destination_branch"], data["origin_branch"]
+        )
+        if return_routes:
+            # Prefer same route name for the return; fall back to first
+            return_route = next(
+                (r for r in return_routes
+                 if r["route"] == data["route_name"]),
+                return_routes[0],
+            )
+
+            ret_values, ret_err = _build_entry_values(
+                data, user_id,
+                override_origin=data["destination_branch"],
+                override_dest=data["origin_branch"],
+                override_route=return_route["route"],
+            )
+            if ret_values and not ret_err:
+                cursor2 = conn.execute(INSERT_SQL, ret_values)
+                ret_id = cursor2.lastrowid
+                ret_row = conn.execute(
+                    "SELECT * FROM entries WHERE id = ?", (ret_id,)
+                ).fetchone()
+                created.append(dict(ret_row))
+
     conn.commit()
-    entry_id = cursor.lastrowid
-    row = conn.execute("SELECT * FROM entries WHERE id = ?", (entry_id,)).fetchone()
     conn.close()
 
-    return jsonify(dict(row)), 201
+    return jsonify({"entries": created, "count": len(created)}), 201
 
 
 @app.route("/api/entries/<int:entry_id>", methods=["PUT"])
 def api_update_entry(entry_id):
-    """Update an existing entry."""
+    """Update an existing entry (must belong to the current user)."""
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({"errors": ["Session not found. Please refresh."]}), 401
+
     data = request.get_json()
     errors = _validate_entry(data)
     if errors:
         return jsonify({"errors": errors}), 400
 
-    miles = get_route_miles(data["origin_branch"], data["destination_branch"], data["route_name"])
+    miles = get_route_miles(
+        data["origin_branch"], data["destination_branch"], data["route_name"]
+    )
     if miles is None:
         return jsonify({"errors": ["Invalid route selection"]}), 400
 
@@ -166,22 +278,30 @@ def api_update_entry(entry_id):
     date_str = f"{year}-{month:02d}-{day:02d}"
     purpose = data.get("business_purpose", "").strip()
     if not purpose:
-        purpose = f"Mileage: {data['origin_branch']} to {data['destination_branch']} via {data['route_name']}"
+        purpose = (
+            f"Mileage: {data['origin_branch']} to "
+            f"{data['destination_branch']} via {data['route_name']}"
+        )
     notes = data.get("notes", "").strip()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_db()
-    conn.execute("""
-        UPDATE entries
-        SET year = ?, month = ?, day = ?, date = ?, origin_branch = ?,
-            destination_branch = ?, route_name = ?, miles = ?,
-            reimbursement_amount = ?, business_purpose = ?, notes = ?,
-            updated_at = ?
-        WHERE id = ?
-    """, (year, month, day, date_str, data["origin_branch"], data["destination_branch"],
-          data["route_name"], miles, reimbursement, purpose, notes, now, entry_id))
+    conn.execute(
+        """UPDATE entries
+           SET year = ?, month = ?, day = ?, date = ?, origin_branch = ?,
+               destination_branch = ?, route_name = ?, miles = ?,
+               reimbursement_amount = ?, business_purpose = ?, notes = ?,
+               updated_at = ?
+           WHERE id = ? AND user_id = ?""",
+        (year, month, day, date_str, data["origin_branch"],
+         data["destination_branch"], data["route_name"], miles,
+         reimbursement, purpose, notes, now, entry_id, user_id),
+    )
     conn.commit()
-    row = conn.execute("SELECT * FROM entries WHERE id = ?", (entry_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM entries WHERE id = ? AND user_id = ?",
+        (entry_id, user_id),
+    ).fetchone()
     conn.close()
 
     if row is None:
@@ -191,9 +311,16 @@ def api_update_entry(entry_id):
 
 @app.route("/api/entries/<int:entry_id>", methods=["DELETE"])
 def api_delete_entry(entry_id):
-    """Delete a single entry."""
+    """Delete a single entry (must belong to the current user)."""
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({"error": "Session not found"}), 401
+
     conn = get_db()
-    row = conn.execute("SELECT * FROM entries WHERE id = ?", (entry_id,)).fetchone()
+    row = conn.execute(
+        "SELECT id FROM entries WHERE id = ? AND user_id = ?",
+        (entry_id, user_id),
+    ).fetchone()
     if row is None:
         conn.close()
         return jsonify({"error": "Entry not found"}), 404
@@ -205,7 +332,11 @@ def api_delete_entry(entry_id):
 
 @app.route("/api/entries/clear", methods=["POST"])
 def api_clear_month():
-    """Delete all entries for a given month/year."""
+    """Delete all entries for a given month/year for the current user."""
+    user_id = get_user_id()
+    if not user_id:
+        return jsonify({"error": "Session not found"}), 401
+
     data = request.get_json()
     year = data.get("year")
     month = data.get("month")
@@ -214,7 +345,8 @@ def api_clear_month():
 
     conn = get_db()
     result = conn.execute(
-        "DELETE FROM entries WHERE year = ? AND month = ?", (year, month)
+        "DELETE FROM entries WHERE user_id = ? AND year = ? AND month = ?",
+        (user_id, year, month),
     )
     conn.commit()
     conn.close()
@@ -222,11 +354,12 @@ def api_clear_month():
 
 
 # ---------------------------------------------------------------------------
-# API — Export
+# API — Export (scoped to user_id)
 # ---------------------------------------------------------------------------
 @app.route("/api/export/csv")
 def api_export_csv():
     """Export entries for a month as CSV."""
+    user_id = get_user_id()
     year = request.args.get("year", type=int)
     month = request.args.get("month", type=int)
     if not year or not month:
@@ -234,8 +367,10 @@ def api_export_csv():
 
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM entries WHERE year = ? AND month = ? ORDER BY day, id",
-        (year, month),
+        """SELECT * FROM entries
+           WHERE user_id = ? AND year = ? AND month = ?
+           ORDER BY day, id""",
+        (user_id, year, month),
     ).fetchall()
     conn.close()
 
@@ -252,14 +387,18 @@ def api_export_csv():
     total_reimb = 0
     for r in rows:
         writer.writerow([
-            r["date"], r["day"], r["origin_branch"], r["destination_branch"],
-            r["route_name"], r["miles"], f"{r['reimbursement_amount']:.2f}",
+            r["date"], r["day"], r["origin_branch"],
+            r["destination_branch"], r["route_name"], r["miles"],
+            f"{r['reimbursement_amount']:.2f}",
             r["business_purpose"], r["notes"],
         ])
         total_miles += r["miles"]
         total_reimb += r["reimbursement_amount"]
     writer.writerow([])
-    writer.writerow(["", "", "", "", "TOTALS", f"{total_miles:.2f}", f"{total_reimb:.2f}", "", ""])
+    writer.writerow([
+        "", "", "", "", "TOTALS",
+        f"{total_miles:.2f}", f"{total_reimb:.2f}", "", "",
+    ])
 
     return Response(
         output.getvalue(),
@@ -271,6 +410,7 @@ def api_export_csv():
 @app.route("/api/export/excel")
 def api_export_excel():
     """Export entries as an Excel reimbursement form."""
+    user_id = get_user_id()
     year = request.args.get("year", type=int)
     month = request.args.get("month", type=int)
     if not year or not month:
@@ -278,8 +418,10 @@ def api_export_excel():
 
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM entries WHERE year = ? AND month = ? ORDER BY day, id",
-        (year, month),
+        """SELECT * FROM entries
+           WHERE user_id = ? AND year = ? AND month = ?
+           ORDER BY day, id""",
+        (user_id, year, month),
     ).fetchall()
     conn.close()
 
@@ -294,10 +436,14 @@ def api_export_excel():
     title_font = Font(name="Calibri", size=16, bold=True, color="1a1a2e")
     subtitle_font = Font(name="Calibri", size=11, color="555555")
     header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="2d3a4a", end_color="2d3a4a", fill_type="solid")
+    header_fill = PatternFill(
+        start_color="2d3a4a", end_color="2d3a4a", fill_type="solid"
+    )
     data_font = Font(name="Calibri", size=10)
     total_font = Font(name="Calibri", size=11, bold=True, color="1a1a2e")
-    total_fill = PatternFill(start_color="e8f0fe", end_color="e8f0fe", fill_type="solid")
+    total_fill = PatternFill(
+        start_color="e8f0fe", end_color="e8f0fe", fill_type="solid"
+    )
     thin_border = Border(
         left=Side(style="thin", color="cccccc"),
         right=Side(style="thin", color="cccccc"),
@@ -306,8 +452,7 @@ def api_export_excel():
     )
 
     # Column widths
-    widths = [14, 6, 18, 18, 12, 10, 16, 35, 25]
-    for i, w in enumerate(widths, 1):
+    for i, w in enumerate([14, 6, 18, 18, 12, 10, 16, 35, 25], 1):
         ws.column_dimensions[chr(64 + i)].width = w
 
     # Title
@@ -323,7 +468,10 @@ def api_export_excel():
     ws["A2"].alignment = Alignment(horizontal="center")
 
     # Headers
-    headers = ["Date", "Day", "From", "To", "Route", "Miles", "Reimbursement", "Business Purpose", "Notes"]
+    headers = [
+        "Date", "Day", "From", "To", "Route",
+        "Miles", "Reimbursement", "Business Purpose", "Notes",
+    ]
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=4, column=col, value=h)
         cell.font = header_font
@@ -331,14 +479,15 @@ def api_export_excel():
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = thin_border
 
-    # Data rows
+    # Data
     total_miles = 0
     total_reimb = 0
     for i, r in enumerate(rows):
         row_num = 5 + i
         values = [
-            r["date"], r["day"], r["origin_branch"], r["destination_branch"],
-            r["route_name"], r["miles"], r["reimbursement_amount"],
+            r["date"], r["day"], r["origin_branch"],
+            r["destination_branch"], r["route_name"],
+            r["miles"], r["reimbursement_amount"],
             r["business_purpose"], r["notes"],
         ]
         for col, val in enumerate(values, 1):
@@ -352,36 +501,41 @@ def api_export_excel():
         total_miles += r["miles"]
         total_reimb += r["reimbursement_amount"]
 
-    # Totals row
+    # Totals
     total_row = 5 + len(rows)
     ws.cell(row=total_row, column=5, value="TOTALS").font = total_font
     ws.cell(row=total_row, column=5).alignment = Alignment(horizontal="right")
 
-    miles_cell = ws.cell(row=total_row, column=6, value=round(total_miles, 2))
+    miles_cell = ws.cell(
+        row=total_row, column=6, value=round(total_miles, 2)
+    )
     miles_cell.font = total_font
     miles_cell.fill = total_fill
     miles_cell.border = thin_border
     miles_cell.number_format = "0.00"
 
-    reimb_cell = ws.cell(row=total_row, column=7, value=round(total_reimb, 2))
+    reimb_cell = ws.cell(
+        row=total_row, column=7, value=round(total_reimb, 2)
+    )
     reimb_cell.font = total_font
     reimb_cell.fill = total_fill
     reimb_cell.border = thin_border
     reimb_cell.number_format = '"$"#,##0.00'
 
-    # Signature line
+    # Signature
     sig_row = total_row + 3
     ws.merge_cells(f"A{sig_row}:D{sig_row}")
     ws[f"A{sig_row}"] = "Employee Signature: ________________________"
-    ws[f"A{sig_row}"].font = Font(name="Calibri", size=10, color="333333")
-
+    ws[f"A{sig_row}"].font = Font(
+        name="Calibri", size=10, color="333333"
+    )
     ws.merge_cells(f"F{sig_row}:I{sig_row}")
     ws[f"F{sig_row}"] = "Date: ________________________"
-    ws[f"F{sig_row}"].font = Font(name="Calibri", size=10, color="333333")
+    ws[f"F{sig_row}"].font = Font(
+        name="Calibri", size=10, color="333333"
+    )
 
-    # Print setup
     ws.print_title_rows = "1:4"
-    ws.sheet_properties.pageSetUpPr = None
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -389,24 +543,14 @@ def api_export_excel():
 
     return Response(
         buf.getvalue(),
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        mimetype=(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        },
     )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _validate_entry(data):
-    errors = []
-    if not data:
-        return ["No data provided"]
-    for field in ("year", "month", "day", "origin_branch", "destination_branch", "route_name"):
-        if not data.get(field):
-            errors.append(f"'{field}' is required")
-    if data.get("origin_branch") == data.get("destination_branch"):
-        errors.append("Origin and destination must be different")
-    return errors
 
 
 # ---------------------------------------------------------------------------

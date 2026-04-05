@@ -1,11 +1,12 @@
 """
 Database initialization and helper functions for the Mileage Tracker.
 Uses SQLite for zero-config persistent storage.
+
+v2: Added user_id column for multi-user support.
 """
 
 import sqlite3
 import os
-from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mileage.db")
 
@@ -20,11 +21,16 @@ def get_db():
 
 
 def init_db():
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, and run migrations."""
     conn = get_db()
+
+    # Create the table (v2 schema with user_id).
+    # If the table already exists from v1, this is a no-op — the
+    # migration below will add the missing column.
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
             year INTEGER NOT NULL,
             month INTEGER NOT NULL,
             day INTEGER NOT NULL,
@@ -44,45 +50,29 @@ def init_db():
             ON entries(year, month);
     """)
     conn.commit()
-    conn.close()
 
+    # v1 → v2 migration: add user_id column to existing databases
+    _migrate_add_user_id(conn)
 
-def seed_sample_data():
-    """Insert sample data for demonstration. Only seeds if no data exists."""
-    conn = get_db()
-    count = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
-    if count > 0:
-        conn.close()
-        return
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    year = 2026
-    month = 4
-
-    sample_entries = [
-        (year, month, 1, f"{year}-04-01", "Bellmead", "Downtown", "I-35", 3.93,
-         round(3.93 * 0.725, 2), "Branch visit for audit review", "", now, now),
-        (year, month, 1, f"{year}-04-01", "Downtown", "Plaza/Woodway", "Franklin", 6.13,
-         round(6.13 * 0.725, 2), "Team meeting at Plaza", "", now, now),
-        (year, month, 2, f"{year}-04-02", "Plaza/Woodway", "Owen", "Hwy 6", 0.5,
-         round(0.5 * 0.725, 2), "Cash delivery to Owen", "", now, now),
-        (year, month, 2, f"{year}-04-02", "Owen", "Bellmead", "I-35", 11.4,
-         round(11.4 * 0.725, 2), "Return to home branch", "", now, now),
-        (year, month, 3, f"{year}-04-03", "Bellmead", "Owen", "I-35", 11.4,
-         round(11.4 * 0.725, 2), "Training session at Owen", "", now, now),
-    ]
-
-    conn.executemany("""
-        INSERT INTO entries (year, month, day, date, origin_branch, destination_branch,
-            route_name, miles, reimbursement_amount, business_purpose, notes,
-            created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, sample_entries)
+    # Now that user_id column is guaranteed to exist, create its index
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_entries_user_id ON entries(user_id)"
+    )
     conn.commit()
     conn.close()
 
 
+def _migrate_add_user_id(conn):
+    """Add user_id column if upgrading from v1 schema."""
+    cursor = conn.execute("PRAGMA table_info(entries)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "user_id" not in columns:
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
+        )
+        conn.commit()
+
+
 if __name__ == "__main__":
     init_db()
-    seed_sample_data()
-    print("Database initialized with sample data.")
+    print("Database initialized.")

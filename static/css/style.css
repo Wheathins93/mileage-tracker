@@ -682,6 +682,131 @@ tfoot td {
     border: 0;
 }
 
+/* --- Settings Bar (v2) --- */
+.settings-bar {
+    padding: 0.65rem 1.25rem;
+}
+
+.settings-content {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.setting-item {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.setting-item svg {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.setting-item label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.setting-item select {
+    font-family: var(--font);
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+}
+
+.setting-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* --- Swap Button (v2) --- */
+.btn-swap-inline {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 0.1rem 0.3rem;
+    border-radius: var(--radius-sm);
+    margin-left: 0.3rem;
+    vertical-align: middle;
+    transition: all var(--transition);
+    display: inline-flex;
+    align-items: center;
+}
+
+.btn-swap-inline:hover {
+    color: var(--primary);
+    background: var(--primary-bg);
+}
+
+/* --- Return Trip Row (v2) --- */
+.return-trip-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding-top: 0.2rem;
+}
+
+.checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text);
+    user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.checkbox-custom {
+    display: none; /* Using native checkbox for simplicity */
+}
+
+.return-info {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.return-info.return-valid {
+    color: var(--accent);
+}
+
+.return-info.return-invalid {
+    color: var(--warning);
+}
+
+/* --- Stat Pop Animation (v2) --- */
+.stat-pop {
+    animation: statPop 0.35s ease;
+}
+
+@keyframes statPop {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.12); }
+    100% { transform: scale(1); }
+}
+
 /* --- Responsive --- */
 @media (max-width: 640px) {
     html { font-size: 14px; }
@@ -700,12 +825,14 @@ tfoot td {
 
     th.purpose-col { display: none; }
     td.purpose-cell { display: none; }
+
+    .settings-content { flex-direction: column; align-items: flex-start; }
 }
 
 @media print {
     .app-header, .form-card, .month-selector, .table-actions,
     .actions-col, .actions-cell, .app-footer, .toast-container,
-    .mileage-ref-card { display: none !important; }
+    .mileage-ref-card, .settings-bar { display: none !important; }
 
     .card { box-shadow: none; border: 1px solid #ccc; }
 

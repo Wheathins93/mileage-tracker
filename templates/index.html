@@ -25,6 +25,22 @@
     </header>
 
     <main class="container">
+        <!-- ===== SETTINGS BAR ===== -->
+        <section class="settings-bar card" id="settings-bar">
+            <div class="settings-content">
+                <div class="setting-item">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                    <label for="home-branch">Home Branch</label>
+                    <select id="home-branch">
+                        <option value="">Not set</option>
+                    </select>
+                </div>
+                <div class="setting-hint" id="setting-hint">
+                    Set your home branch to auto-fill the "From" field and enable return trips
+                </div>
+            </div>
+        </section>
+
         <!-- ===== MONTH SELECTOR ===== -->
         <section class="month-selector card" id="month-selector">
             <div class="month-nav">
@@ -77,7 +93,12 @@
                         </select>
                     </div>
                     <div class="form-group">
-                        <label for="entry-destination">To</label>
+                        <label for="entry-destination">
+                            To
+                            <button type="button" class="btn-swap-inline" id="btn-swap" title="Swap From / To">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+                            </button>
+                        </label>
                         <select id="entry-destination" required>
                             <option value="">Select branch…</option>
                         </select>
@@ -97,6 +118,15 @@
                             <span class="preview-label">Reimb.</span>
                             <span class="preview-value accent-text" id="preview-reimb">—</span>
                         </div>
+                    </div>
+                    <!-- Return trip checkbox -->
+                    <div class="form-group full-width return-trip-row" id="return-trip-row">
+                        <label class="checkbox-label" for="include-return">
+                            <input type="checkbox" id="include-return">
+                            <span class="checkbox-custom"></span>
+                            <span>Include return trip</span>
+                        </label>
+                        <span class="return-info" id="return-info"></span>
                     </div>
                     <div class="form-group full-width">
                         <label for="entry-purpose">Business Purpose <span class="optional">(auto-filled if blank)</span></label>
@@ -203,7 +233,7 @@
     </div>
 
     <footer class="app-footer">
-        <p>Rate: $0.725/mile (2026) &middot; Data stored locally in SQLite</p>
+        <p>Rate: $0.725/mile (2026) &middot; Data stored per-browser session</p>
     </footer>
 
     <script src="/static/js/app.js"></script>
