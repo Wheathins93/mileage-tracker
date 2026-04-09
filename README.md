@@ -4,6 +4,7 @@ A lightweight web app for tracking mileage between bank branches and calculating
 
 ## Features
 
+- **PIN Login** — Simple 4–8 digit PIN to secure your data. Works reliably on iOS Home Screen web apps.
 - **Quick Entry** — Select origin/destination branches and routes from dropdowns; miles and reimbursement auto-calculate
 - **Multiple Entries Per Day** — Add as many trips as needed for any given day
 - **Monthly View** — See all entries for a selected month with running totals
@@ -12,6 +13,9 @@ A lightweight web app for tracking mileage between bank branches and calculating
 - **Excel Export** — Download a formatted reimbursement form (.xlsx) with totals and signature line
 - **Reset Month** — Clear all entries for a month when you're ready to start fresh
 - **Filter by Day** — Quickly filter the table to a specific day
+- **Return Trip** — Checkbox to automatically create a round-trip entry
+- **Home Branch** — Set once, auto-fills the "From" field
+- **Swap Branches** — Quick ⇄ button to reverse origin/destination
 - **Auto-generated Purpose** — If you leave "Business Purpose" blank, it auto-fills (e.g., "Mileage: Bellmead to Downtown via I-35")
 - **Printable** — Use Ctrl/Cmd+P for a clean print layout
 - **Mobile Friendly** — Responsive design works on phones and tablets
@@ -50,14 +54,14 @@ The app will start at **http://127.0.0.1:5000**
 
 Navigate to [http://127.0.0.1:5000](http://127.0.0.1:5000)
 
-Sample data for April 2026 is pre-loaded so you can see how it works right away.
+On first visit, you'll be prompted to create an account with your name and a PIN.
 
 ## Project Structure
 
 ```
 Mileage tracker/
 ├── app.py              # Flask application & API routes
-├── database.py         # SQLite schema, init, seed data
+├── database.py         # SQLite schema, migrations, user auth helpers
 ├── routes_data.py      # Mileage table & reimbursement logic
 ├── requirements.txt    # Python dependencies
 ├── mileage.db          # SQLite database (created on first run)
@@ -70,6 +74,16 @@ Mileage tracker/
 │       └── app.js      # Frontend logic
 └── README.md
 ```
+
+## Authentication
+
+The app uses a simple PIN-based login system:
+
+1. **First Visit** — Create an account with your name and a 4–8 digit PIN
+2. **Returning** — Enter your PIN to access your data
+3. **iOS Friendly** — Unlike cookies, your PIN works even if the browser clears storage
+
+PINs are hashed server-side (SHA-256 with salt). Each PIN maps to a unique user ID, and all data is scoped to that user.
 
 ## Mileage Table (Built-in)
 
@@ -96,17 +110,21 @@ Mileage tracker/
 
 ## Usage Workflow
 
-1. **Select Month/Year** — Use the arrows or dropdowns at the top
-2. **Add Entry** — Pick the day, from/to branches, and route → miles fill automatically
-3. **Save** — Click "Save Entry" to store it
-4. **Review** — Entries appear in the table below with running totals
-5. **Export** — Click CSV or Excel to download your reimbursement report
-6. **Reset** — Click Reset to clear the month after submitting your expense report
+1. **Log In** — Enter your PIN (or create an account on first visit)
+2. **Select Month/Year** — Use the arrows or dropdowns at the top
+3. **Add Entry** — Pick the day, from/to branches, and route → miles fill automatically
+4. **Save** — Click "Save Entry" to store it
+5. **Review** — Entries appear in the table below with running totals
+6. **Export** — Click CSV or Excel to download your reimbursement report
+7. **Reset** — Click Reset to clear the month after submitting your expense report
 
 ## API Reference
 
 | Method | Endpoint              | Description                  |
 |--------|-----------------------|------------------------------|
+| POST   | `/api/auth/register`  | Create new user (PIN + name) |
+| POST   | `/api/auth/login`     | Log in with PIN              |
+| POST   | `/api/auth/verify`    | Verify stored session        |
 | GET    | `/api/branches`       | List all branches            |
 | GET    | `/api/routes`         | Get routes between branches  |
 | GET    | `/api/mileage-table`  | Full mileage reference       |

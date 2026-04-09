@@ -1,5 +1,7 @@
 # Database
 mileage.db
+mileage.db-wal
+mileage.db-shm
 
 # Python
 __pycache__/

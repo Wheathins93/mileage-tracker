@@ -1,8 +1,14 @@
 """
-Mileage Tracker — Flask Application (v2)
+Mileage Tracker — Flask Application (v3)
+
+Changes from v2:
+- Replaced cookie-based user identity with PIN-based login
+- Added /api/auth/register and /api/auth/login endpoints
+- User identity sent via X-User-Id header from the frontend
+- Removed cookie dependency entirely
 
 Changes from v1:
-- Multi-user support via browser cookie (user_id)
+- Multi-user support via user_id
 - "Include return trip" creates two entries in one submit
 - All queries scoped to the requesting user
 """
@@ -17,7 +23,7 @@ from flask import Flask, render_template, request, jsonify, Response
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
-from database import get_db, init_db
+from database import get_db, init_db, create_user, authenticate_user
 from routes_data import (
     BRANCHES,
     MILEAGE_TABLE,
@@ -41,8 +47,21 @@ with app.app_context():
 # Helpers
 # ---------------------------------------------------------------------------
 def get_user_id():
-    """Read the user_id cookie set by the frontend."""
-    return request.cookies.get("user_id", "")
+    """Read the user_id from the X-User-Id header set by the frontend."""
+    return request.headers.get("X-User-Id", "").strip()
+
+
+def require_user(f):
+    """Decorator that returns 401 if no user_id header is present."""
+    from functools import wraps
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not get_user_id():
+            return jsonify({"error": "Not authenticated. Please log in."}), 401
+        return f(*args, **kwargs)
+
+    return decorated
 
 
 def _validate_entry(data):
@@ -114,6 +133,84 @@ def index():
 
 
 # ---------------------------------------------------------------------------
+# API — Authentication
+# ---------------------------------------------------------------------------
+@app.route("/api/auth/register", methods=["POST"])
+def api_register():
+    """Register a new user with a PIN and display name."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    pin = data.get("pin", "").strip()
+    display_name = data.get("display_name", "").strip()
+
+    if not pin or not display_name:
+        return jsonify({"error": "PIN and name are required"}), 400
+
+    if not pin.isdigit() or len(pin) < 4 or len(pin) > 8:
+        return jsonify({"error": "PIN must be 4–8 digits"}), 400
+
+    user = create_user(pin, display_name)
+    if user is None:
+        return jsonify({
+            "error": "That PIN is already in use. Please choose a different one."
+        }), 409
+
+    return jsonify({
+        "user_id": user["id"],
+        "display_name": user["display_name"],
+    }), 201
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_login():
+    """Log in with a PIN."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+
+    pin = data.get("pin", "").strip()
+    if not pin:
+        return jsonify({"error": "PIN is required"}), 400
+
+    user = authenticate_user(pin)
+    if user is None:
+        return jsonify({"error": "Invalid PIN. Please try again."}), 401
+
+    return jsonify({
+        "user_id": user["id"],
+        "display_name": user["display_name"],
+    })
+
+
+@app.route("/api/auth/verify", methods=["POST"])
+def api_verify():
+    """Verify that a stored user_id is still valid."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"valid": False}), 400
+
+    user_id = data.get("user_id", "").strip()
+    if not user_id:
+        return jsonify({"valid": False}), 400
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, display_name FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    conn.close()
+
+    if user:
+        return jsonify({
+            "valid": True,
+            "user_id": user["id"],
+            "display_name": user["display_name"],
+        })
+    return jsonify({"valid": False}), 401
+
+
+# ---------------------------------------------------------------------------
 # API — Reference Data
 # ---------------------------------------------------------------------------
 @app.route("/api/branches")
@@ -155,13 +252,10 @@ def api_rate():
 # API — CRUD (all scoped to user_id)
 # ---------------------------------------------------------------------------
 @app.route("/api/entries")
+@require_user
 def api_entries():
     """Get entries for a given month/year, scoped to the current user."""
     user_id = get_user_id()
-    if not user_id:
-        return jsonify({"entries": [], "summary": {
-            "total_entries": 0, "total_miles": 0, "total_reimbursement": 0,
-        }})
 
     year = request.args.get("year", type=int)
     month = request.args.get("month", type=int)
@@ -194,11 +288,10 @@ def api_entries():
 
 
 @app.route("/api/entries", methods=["POST"])
+@require_user
 def api_create_entry():
     """Create a new mileage entry, optionally with a return trip."""
     user_id = get_user_id()
-    if not user_id:
-        return jsonify({"errors": ["Session not found. Please refresh."]}), 401
 
     data = request.get_json()
     errors = _validate_entry(data)
@@ -254,11 +347,10 @@ def api_create_entry():
 
 
 @app.route("/api/entries/<int:entry_id>", methods=["PUT"])
+@require_user
 def api_update_entry(entry_id):
     """Update an existing entry (must belong to the current user)."""
     user_id = get_user_id()
-    if not user_id:
-        return jsonify({"errors": ["Session not found. Please refresh."]}), 401
 
     data = request.get_json()
     errors = _validate_entry(data)
@@ -310,11 +402,10 @@ def api_update_entry(entry_id):
 
 
 @app.route("/api/entries/<int:entry_id>", methods=["DELETE"])
+@require_user
 def api_delete_entry(entry_id):
     """Delete a single entry (must belong to the current user)."""
     user_id = get_user_id()
-    if not user_id:
-        return jsonify({"error": "Session not found"}), 401
 
     conn = get_db()
     row = conn.execute(
@@ -331,11 +422,10 @@ def api_delete_entry(entry_id):
 
 
 @app.route("/api/entries/clear", methods=["POST"])
+@require_user
 def api_clear_month():
     """Delete all entries for a given month/year for the current user."""
     user_id = get_user_id()
-    if not user_id:
-        return jsonify({"error": "Session not found"}), 401
 
     data = request.get_json()
     year = data.get("year")
@@ -357,6 +447,7 @@ def api_clear_month():
 # API — Export (scoped to user_id)
 # ---------------------------------------------------------------------------
 @app.route("/api/export/csv")
+@require_user
 def api_export_csv():
     """Export entries for a month as CSV."""
     user_id = get_user_id()
@@ -408,6 +499,7 @@ def api_export_csv():
 
 
 @app.route("/api/export/excel")
+@require_user
 def api_export_excel():
     """Export entries as an Excel reimbursement form."""
     user_id = get_user_id()

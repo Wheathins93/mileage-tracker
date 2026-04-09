@@ -1,5 +1,35 @@
 # Changelog
 
+## v3.0.0 — PIN-Based Login (2026-04-09)
+
+### Problem Solved
+Cookie-based user identity was unreliable on iOS Home Screen web apps. Safari's Intelligent Tracking Prevention (ITP) and WebKit storage policies purge cookies and localStorage after ~7 days of inactivity, causing users to lose their session and data association.
+
+### New Features
+- **PIN-based login**: Users create a 4–8 digit PIN on first use. Data is tied to the PIN on the server, not to browser storage. If storage is ever cleared, simply re-enter your PIN to get back to your data.
+- **Simple registration**: Enter your name and choose a PIN — that's it. No email, no password complexity.
+- **User badge**: Your name appears in the header with a one-tap sign-out button.
+- **Session verification**: On load, the app verifies your stored session is still valid. If storage was purged, you're prompted to re-login (no data lost).
+- **iOS web app meta tags**: Added `apple-mobile-web-app-capable` and related meta tags for better Home Screen behavior.
+
+### Changes
+- User identity sent via `X-User-Id` header instead of cookies
+- Server-side PIN hashing (SHA-256 with app-level salt)
+- Added `users` table in SQLite for persistent user accounts
+- Added `@require_user` decorator for consistent auth enforcement
+- Export downloads use `fetch` + Blob approach to include auth header
+- Auth and tracker event bindings separated to prevent duplicate listeners
+- Footer text updated from "per-browser session" to "personal PIN"
+
+### Technical
+- New endpoints: `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/verify`
+- `database.py`: Added `users` table, `create_user()`, `authenticate_user()`, `hash_pin()`
+- Frontend auth flow: localStorage stores `mileage_user_id` + `mileage_display_name`; verified against server on each page load
+- Cookie reading (`request.cookies`) replaced with header reading (`request.headers`)
+- Backward-compatible with existing v2 `entries` table schema
+
+---
+
 ## v2.0.0 — Multi-User & Quality of Life (2026-04-04)
 
 ### New Features

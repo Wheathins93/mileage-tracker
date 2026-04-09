@@ -2,9 +2,12 @@
 Database initialization and helper functions for the Mileage Tracker.
 Uses SQLite for zero-config persistent storage.
 
+v3: Added users table for PIN-based authentication.
 v2: Added user_id column for multi-user support.
 """
 
+import hashlib
+import secrets
 import sqlite3
 import os
 
@@ -24,7 +27,7 @@ def init_db():
     """Create tables if they don't exist, and run migrations."""
     conn = get_db()
 
-    # Create the table (v2 schema with user_id).
+    # Create the entries table (v2 schema with user_id).
     # If the table already exists from v1, this is a no-op — the
     # migration below will add the missing column.
     conn.executescript("""
@@ -59,6 +62,18 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_entries_user_id ON entries(user_id)"
     )
     conn.commit()
+
+    # v3: Create users table for PIN-based auth
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            pin_hash TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+            last_login TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );
+    """)
+    conn.commit()
     conn.close()
 
 
@@ -71,6 +86,70 @@ def _migrate_add_user_id(conn):
             "ALTER TABLE entries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''"
         )
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# User / PIN helpers
+# ---------------------------------------------------------------------------
+def hash_pin(pin):
+    """Hash a PIN using SHA-256 with a fixed app-level salt.
+
+    This is sufficient for short PINs in a low-stakes personal tool.
+    A global salt prevents rainbow tables while keeping lookups simple.
+    """
+    salted = f"mileage-tracker:{pin}"
+    return hashlib.sha256(salted.encode()).hexdigest()
+
+
+def create_user(pin, display_name):
+    """Create a new user with the given PIN and display name.
+
+    Returns the new user dict, or None if the PIN is already taken.
+    """
+    pin_h = hash_pin(pin)
+    user_id = secrets.token_hex(16)
+
+    conn = get_db()
+    # Ensure PIN is unique
+    existing = conn.execute(
+        "SELECT id FROM users WHERE pin_hash = ?", (pin_h,)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return None
+
+    conn.execute(
+        """INSERT INTO users (id, pin_hash, display_name)
+           VALUES (?, ?, ?)""",
+        (user_id, pin_h, display_name.strip()),
+    )
+    conn.commit()
+    user = conn.execute(
+        "SELECT * FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    conn.close()
+    return dict(user) if user else None
+
+
+def authenticate_user(pin):
+    """Look up a user by PIN.
+
+    Returns the user dict, or None if not found.
+    """
+    pin_h = hash_pin(pin)
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT * FROM users WHERE pin_hash = ?", (pin_h,)
+    ).fetchone()
+    if user:
+        conn.execute(
+            "UPDATE users SET last_login = datetime('now', 'localtime') WHERE id = ?",
+            (user["id"],),
+        )
+        conn.commit()
+    conn.close()
+    return dict(user) if user else None
 
 
 if __name__ == "__main__":

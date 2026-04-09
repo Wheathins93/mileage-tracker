@@ -1,6 +1,7 @@
 /* ===================================================================
    Mileage Tracker — Styles
    Clean, modern design with dark accents and smooth interactions.
+   v3: Added auth screen and user badge styles.
    =================================================================== */
 
 /* --- Reset & Base --- */
@@ -62,6 +63,211 @@ body {
     color: var(--text);
     line-height: 1.5;
     min-height: 100vh;
+}
+
+/* ===================================================================
+   AUTH SCREEN (v3)
+   =================================================================== */
+.auth-container {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: linear-gradient(145deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-container::before {
+    content: '';
+    position: absolute;
+    top: -40%;
+    left: -20%;
+    width: 80%;
+    height: 80%;
+    background: radial-gradient(ellipse, rgba(37,99,235,0.12) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.auth-container::after {
+    content: '';
+    position: absolute;
+    bottom: -30%;
+    right: -15%;
+    width: 60%;
+    height: 60%;
+    background: radial-gradient(ellipse, rgba(5,150,105,0.08) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.auth-card {
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 20px 40px rgba(0,0,0,0.15), 0 0 0 1px rgba(255,255,255,0.05);
+    padding: 2.5rem 2rem;
+    width: 100%;
+    max-width: 400px;
+    position: relative;
+    z-index: 1;
+    animation: authCardIn 0.4s ease;
+}
+
+@keyframes authCardIn {
+    from { opacity: 0; transform: translateY(16px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.auth-header {
+    text-align: center;
+    margin-bottom: 1.8rem;
+}
+
+.auth-header svg {
+    color: var(--primary);
+    margin-bottom: 0.6rem;
+}
+
+.auth-header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text);
+}
+
+.auth-subtitle {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+    margin-top: 0.2rem;
+}
+
+.auth-form-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+}
+
+.auth-form-desc {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 1.25rem;
+}
+
+.auth-field {
+    margin-bottom: 1rem;
+}
+
+.auth-field label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 0.3rem;
+}
+
+.auth-field input {
+    width: 100%;
+    font-family: var(--font);
+    font-size: 1rem;
+    padding: 0.7rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.auth-field input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+}
+
+.field-hint {
+    display: block;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+}
+
+.auth-error {
+    color: var(--danger);
+    font-size: 0.82rem;
+    font-weight: 500;
+    min-height: 1.3em;
+    margin-bottom: 0.5rem;
+}
+
+.auth-btn {
+    width: 100%;
+    justify-content: center;
+    padding: 0.7rem;
+    font-size: 0.95rem;
+}
+
+.auth-switch {
+    text-align: center;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    margin-top: 1.2rem;
+}
+
+.auth-switch a {
+    color: var(--primary);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.auth-switch a:hover {
+    text-decoration: underline;
+}
+
+/* ===================================================================
+   USER BADGE (v3)
+   =================================================================== */
+.user-badge {
+    position: absolute;
+    top: 0.75rem;
+    right: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: rgba(255,255,255,0.1);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px;
+    padding: 0.3rem 0.6rem 0.3rem 0.7rem;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: rgba(255,255,255,0.85);
+    z-index: 2;
+}
+
+.user-badge svg {
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+
+.btn-logout {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: rgba(255,255,255,0.5);
+    padding: 0.15rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    transition: all var(--transition);
+    margin-left: 0.2rem;
+}
+
+.btn-logout:hover {
+    color: rgba(255,255,255,0.9);
+    background: rgba(255,255,255,0.1);
 }
 
 /* --- Header --- */
@@ -827,12 +1033,21 @@ tfoot td {
     td.purpose-cell { display: none; }
 
     .settings-content { flex-direction: column; align-items: flex-start; }
+
+    /* Auth on mobile */
+    .auth-card { padding: 2rem 1.5rem; }
+
+    .user-badge {
+        position: static;
+        margin: 0.5rem auto 0;
+        justify-content: center;
+    }
 }
 
 @media print {
     .app-header, .form-card, .month-selector, .table-actions,
     .actions-col, .actions-cell, .app-footer, .toast-container,
-    .mileage-ref-card, .settings-bar { display: none !important; }
+    .mileage-ref-card, .settings-bar, .user-badge { display: none !important; }
 
     .card { box-shadow: none; border: 1px solid #ccc; }
 

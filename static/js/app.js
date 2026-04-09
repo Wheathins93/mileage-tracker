@@ -1,8 +1,13 @@
 /**
- * Mileage Tracker — Frontend Application (v2)
+ * Mileage Tracker — Frontend Application (v3)
  *
- * Changes from v1:
- * - Multi-user via UUID cookie (each browser gets its own tracker)
+ * Changes from v2:
+ * - Replaced cookie-based user identity with PIN-based login
+ * - Login/register screen shown before tracker is accessible
+ * - All API calls send X-User-Id header instead of cookie
+ * - Session survives iOS storage eviction because user can re-login
+ *
+ * Retained from v2:
  * - "Include return trip" checkbox with live preview
  * - Home branch setting with auto-fill
  * - Swap branches button
@@ -20,12 +25,15 @@
         "July", "August", "September", "October", "November", "December",
     ];
 
-    const COOKIE_MAX_AGE = 365 * 24 * 60 * 60; // 1 year in seconds
+    const STORAGE_KEY_USER = "mileage_user_id";
+    const STORAGE_KEY_NAME = "mileage_display_name";
 
     // ========================================================================
     // State
     // ========================================================================
     let state = {
+        userId: null,
+        displayName: "",
         year: new Date().getFullYear(),
         month: new Date().getMonth() + 1,
         branches: [],
@@ -39,95 +47,256 @@
     };
 
     // ========================================================================
-    // DOM References
+    // DOM References (lazy — filled after DOM ready)
     // ========================================================================
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => document.querySelectorAll(sel);
 
-    const dom = {
-        // Settings
-        homeBranch: $("#home-branch"),
-        settingHint: $("#setting-hint"),
-        // Month
-        selectMonth: $("#select-month"),
-        selectYear: $("#select-year"),
-        btnPrev: $("#btn-prev-month"),
-        btnNext: $("#btn-next-month"),
-        // Summary
-        statEntries: $("#stat-entries"),
-        statMiles: $("#stat-miles"),
-        statReimb: $("#stat-reimb"),
-        // Form
-        form: $("#entry-form"),
-        formTitle: $("#form-title"),
-        btnCancel: $("#btn-cancel-edit"),
-        editId: $("#edit-id"),
-        entryDay: $("#entry-day"),
-        entryOrigin: $("#entry-origin"),
-        entryDest: $("#entry-destination"),
-        entryRoute: $("#entry-route"),
-        entryPurpose: $("#entry-purpose"),
-        entryNotes: $("#entry-notes"),
-        previewMiles: $("#preview-miles"),
-        previewReimb: $("#preview-reimb"),
-        btnSubmit: $("#btn-submit"),
-        btnSwap: $("#btn-swap"),
-        // Return trip
-        returnTripRow: $("#return-trip-row"),
-        includeReturn: $("#include-return"),
-        returnInfo: $("#return-info"),
-        // Table
-        tbody: $("#entries-tbody"),
-        tableTotalMiles: $("#table-total-miles"),
-        tableTotalReimb: $("#table-total-reimb"),
-        emptyState: $("#empty-state"),
-        tableWrapper: $(".table-wrapper"),
-        filterDay: $("#filter-day"),
-        btnExportCsv: $("#btn-export-csv"),
-        btnExportExcel: $("#btn-export-excel"),
-        btnReset: $("#btn-reset-month"),
-        // Reference
-        toggleRef: $("#toggle-mileage-ref"),
-        refBody: $("#mileage-ref-body"),
-        refTbody: $("#ref-tbody"),
-        // Toast & Modal
-        toastContainer: $("#toast-container"),
-        modalOverlay: $("#modal-overlay"),
-        modalTitle: $("#modal-title"),
-        modalMessage: $("#modal-message"),
-        modalCancel: $("#modal-cancel"),
-        modalConfirm: $("#modal-confirm"),
-    };
+    let dom = {};
 
-    // ========================================================================
-    // User Identity (cookie-based)
-    // ========================================================================
-    function ensureUserId() {
-        // Check localStorage first (survives cookie expiry / Safari ITP)
-        let userId = localStorage.getItem("mileage_user_id");
-        if (!userId) {
-            // Check existing cookie
-            userId = getCookie("user_id");
-        }
-        if (!userId) {
-            userId = crypto.randomUUID();
-        }
-        // Persist in both localStorage and cookie
-        localStorage.setItem("mileage_user_id", userId);
-        setCookie("user_id", userId, COOKIE_MAX_AGE);
-        return userId;
+    function cacheDom() {
+        dom = {
+            // Auth
+            authScreen: $("#auth-screen"),
+            appScreen: $("#app-screen"),
+            authLoginForm: $("#auth-login-form"),
+            authRegisterForm: $("#auth-register-form"),
+            authShowRegister: $("#auth-show-register"),
+            authShowLogin: $("#auth-show-login"),
+            authLoginPin: $("#auth-login-pin"),
+            authRegPin: $("#auth-reg-pin"),
+            authRegName: $("#auth-reg-name"),
+            authLoginError: $("#auth-login-error"),
+            authRegError: $("#auth-reg-error"),
+            // User badge / logout
+            userBadge: $("#user-badge"),
+            userName: $("#user-name"),
+            btnLogout: $("#btn-logout"),
+            // Settings
+            homeBranch: $("#home-branch"),
+            settingHint: $("#setting-hint"),
+            // Month
+            selectMonth: $("#select-month"),
+            selectYear: $("#select-year"),
+            btnPrev: $("#btn-prev-month"),
+            btnNext: $("#btn-next-month"),
+            // Summary
+            statEntries: $("#stat-entries"),
+            statMiles: $("#stat-miles"),
+            statReimb: $("#stat-reimb"),
+            // Form
+            form: $("#entry-form"),
+            formTitle: $("#form-title"),
+            btnCancel: $("#btn-cancel-edit"),
+            editId: $("#edit-id"),
+            entryDay: $("#entry-day"),
+            entryOrigin: $("#entry-origin"),
+            entryDest: $("#entry-destination"),
+            entryRoute: $("#entry-route"),
+            entryPurpose: $("#entry-purpose"),
+            entryNotes: $("#entry-notes"),
+            previewMiles: $("#preview-miles"),
+            previewReimb: $("#preview-reimb"),
+            btnSubmit: $("#btn-submit"),
+            btnSwap: $("#btn-swap"),
+            // Return trip
+            returnTripRow: $("#return-trip-row"),
+            includeReturn: $("#include-return"),
+            returnInfo: $("#return-info"),
+            // Table
+            tbody: $("#entries-tbody"),
+            tableTotalMiles: $("#table-total-miles"),
+            tableTotalReimb: $("#table-total-reimb"),
+            emptyState: $("#empty-state"),
+            tableWrapper: $(".table-wrapper"),
+            filterDay: $("#filter-day"),
+            btnExportCsv: $("#btn-export-csv"),
+            btnExportExcel: $("#btn-export-excel"),
+            btnReset: $("#btn-reset-month"),
+            // Reference
+            toggleRef: $("#toggle-mileage-ref"),
+            refBody: $("#mileage-ref-body"),
+            refTbody: $("#ref-tbody"),
+            // Toast & Modal
+            toastContainer: $("#toast-container"),
+            modalOverlay: $("#modal-overlay"),
+            modalTitle: $("#modal-title"),
+            modalMessage: $("#modal-message"),
+            modalCancel: $("#modal-cancel"),
+            modalConfirm: $("#modal-confirm"),
+        };
     }
 
-    function setCookie(name, value, maxAge) {
-        document.cookie =
-            `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAge}; SameSite=Lax`;
+    // ========================================================================
+    // API Helpers
+    // ========================================================================
+    async function api(url, options = {}) {
+        try {
+            const headers = {
+                "Content-Type": "application/json",
+                ...(options.headers || {}),
+            };
+            // Attach user_id header when authenticated
+            if (state.userId) {
+                headers["X-User-Id"] = state.userId;
+            }
+            const res = await fetch(url, {
+                ...options,
+                headers,
+            });
+            // For file downloads, return the response directly
+            if (res.headers.get("content-type")?.includes("text/csv") ||
+                res.headers.get("content-type")?.includes("spreadsheetml")) {
+                return res;
+            }
+            const data = await res.json();
+            if (!res.ok) {
+                const msg = data.errors
+                    ? data.errors.join(", ")
+                    : data.error || "Request failed";
+                throw new Error(msg);
+            }
+            return data;
+        } catch (err) {
+            toast(err.message, "error");
+            throw err;
+        }
     }
 
-    function getCookie(name) {
-        const match = document.cookie.match(
-            new RegExp("(?:^|; )" + name + "=([^;]*)")
+    // ========================================================================
+    // Authentication
+    // ========================================================================
+    function loadStoredSession() {
+        state.userId = localStorage.getItem(STORAGE_KEY_USER) || null;
+        state.displayName = localStorage.getItem(STORAGE_KEY_NAME) || "";
+    }
+
+    function saveSession(userId, displayName) {
+        state.userId = userId;
+        state.displayName = displayName;
+        localStorage.setItem(STORAGE_KEY_USER, userId);
+        localStorage.setItem(STORAGE_KEY_NAME, displayName);
+    }
+
+    function clearSession() {
+        state.userId = null;
+        state.displayName = "";
+        localStorage.removeItem(STORAGE_KEY_USER);
+        localStorage.removeItem(STORAGE_KEY_NAME);
+        localStorage.removeItem("mileage_home_branch");
+    }
+
+    async function verifySession() {
+        if (!state.userId) return false;
+        try {
+            const res = await fetch("/api/auth/verify", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ user_id: state.userId }),
+            });
+            const data = await res.json();
+            if (data.valid) {
+                state.displayName = data.display_name;
+                localStorage.setItem(STORAGE_KEY_NAME, data.display_name);
+                return true;
+            }
+            return false;
+        } catch {
+            // Network error — give benefit of the doubt if we have a stored id
+            return !!state.userId;
+        }
+    }
+
+    function showAuthScreen() {
+        dom.authScreen.style.display = "";
+        dom.appScreen.style.display = "none";
+    }
+
+    function showAppScreen() {
+        dom.authScreen.style.display = "none";
+        dom.appScreen.style.display = "";
+        dom.userName.textContent = state.displayName;
+        dom.userBadge.style.display = "";
+    }
+
+    async function handleLogin(e) {
+        e.preventDefault();
+        dom.authLoginError.textContent = "";
+        const pin = dom.authLoginPin.value.trim();
+
+        if (!pin) {
+            dom.authLoginError.textContent = "Please enter your PIN.";
+            return;
+        }
+
+        try {
+            const res = await fetch("/api/auth/login", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pin }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                dom.authLoginError.textContent = data.error || "Login failed.";
+                return;
+            }
+            saveSession(data.user_id, data.display_name);
+            showAppScreen();
+            await initTracker();
+        } catch {
+            dom.authLoginError.textContent = "Network error. Please try again.";
+        }
+    }
+
+    async function handleRegister(e) {
+        e.preventDefault();
+        dom.authRegError.textContent = "";
+        const pin = dom.authRegPin.value.trim();
+        const name = dom.authRegName.value.trim();
+
+        if (!name) {
+            dom.authRegError.textContent = "Please enter your name.";
+            return;
+        }
+        if (!pin || !(/^\d{4,8}$/.test(pin))) {
+            dom.authRegError.textContent = "PIN must be 4–8 digits.";
+            return;
+        }
+
+        try {
+            const res = await fetch("/api/auth/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pin, display_name: name }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                dom.authRegError.textContent = data.error || "Registration failed.";
+                return;
+            }
+            saveSession(data.user_id, data.display_name);
+            showAppScreen();
+            await initTracker();
+        } catch {
+            dom.authRegError.textContent = "Network error. Please try again.";
+        }
+    }
+
+    function handleLogout() {
+        showConfirm(
+            "Sign Out",
+            "Are you sure you want to sign out? You can log back in with your PIN.",
+            () => {
+                clearSession();
+                showAuthScreen();
+                // Reset the login form
+                dom.authLoginPin.value = "";
+                dom.authRegPin.value = "";
+                dom.authRegName.value = "";
+                dom.authLoginError.textContent = "";
+                dom.authRegError.textContent = "";
+            }
         );
-        return match ? decodeURIComponent(match[1]) : null;
     }
 
     // ========================================================================
@@ -154,41 +323,34 @@
     }
 
     // ========================================================================
-    // API Helpers
+    // Init — Auth Gate
     // ========================================================================
-    async function api(url, options = {}) {
-        try {
-            const res = await fetch(url, {
-                headers: { "Content-Type": "application/json" },
-                credentials: "same-origin", // ensures cookies are sent
-                ...options,
-            });
-            const data = await res.json();
-            if (!res.ok) {
-                const msg = data.errors
-                    ? data.errors.join(", ")
-                    : data.error || "Request failed";
-                throw new Error(msg);
-            }
-            return data;
-        } catch (err) {
-            toast(err.message, "error");
-            throw err;
+    async function init() {
+        cacheDom();
+        bindAuthEvents();
+        loadStoredSession();
+
+        const valid = await verifySession();
+        if (valid) {
+            showAppScreen();
+            await initTracker();
+        } else {
+            clearSession();
+            showAuthScreen();
         }
     }
 
     // ========================================================================
-    // Init
+    // Init — Tracker (after auth)
     // ========================================================================
-    async function init() {
-        ensureUserId();
+    async function initTracker() {
         loadHomeBranch();
         populateMonthYear();
         populateDays();
         await loadBranches();
         await loadEntries();
         await loadMileageRef();
-        bindEvents();
+        bindTrackerEvents();
         updateSettingHint();
     }
 
@@ -695,19 +857,69 @@
     // ========================================================================
     // Export
     // ========================================================================
-    function downloadFile(url) {
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+    function downloadExport(url) {
+        // For authenticated exports, we need to add the header.
+        // Use fetch + blob approach instead of direct link click.
+        fetch(url, {
+            headers: { "X-User-Id": state.userId || "" },
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error("Export failed");
+                const disposition = res.headers.get("content-disposition") || "";
+                const match = disposition.match(/filename=(.+)/);
+                const filename = match ? match[1] : "export";
+                return res.blob().then((blob) => ({ blob, filename }));
+            })
+            .then(({ blob, filename }) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            })
+            .catch(() => toast("Export failed", "error"));
     }
 
     // ========================================================================
-    // Event Bindings
+    // Event Bindings — Auth
     // ========================================================================
-    function bindEvents() {
+    let authBound = false;
+
+    function bindAuthEvents() {
+        if (authBound) return;
+        authBound = true;
+
+        dom.authLoginForm.addEventListener("submit", handleLogin);
+        dom.authRegisterForm.addEventListener("submit", handleRegister);
+
+        dom.authShowRegister.addEventListener("click", (e) => {
+            e.preventDefault();
+            dom.authLoginForm.parentElement.style.display = "none";
+            dom.authRegisterForm.parentElement.style.display = "";
+        });
+
+        dom.authShowLogin.addEventListener("click", (e) => {
+            e.preventDefault();
+            dom.authRegisterForm.parentElement.style.display = "none";
+            dom.authLoginForm.parentElement.style.display = "";
+        });
+    }
+
+    // ========================================================================
+    // Event Bindings — Tracker
+    // ========================================================================
+    let trackerBound = false;
+
+    function bindTrackerEvents() {
+        if (trackerBound) return;
+        trackerBound = true;
+
+        // --- Logout ---
+        dom.btnLogout.addEventListener("click", handleLogout);
+
         // --- Home branch ---
         dom.homeBranch.addEventListener("change", () => {
             saveHomeBranch(dom.homeBranch.value);
@@ -815,14 +1027,14 @@
 
         // --- Export ---
         dom.btnExportCsv.addEventListener("click", () => {
-            downloadFile(
+            downloadExport(
                 `/api/export/csv?year=${state.year}&month=${state.month}`
             );
             toast("CSV downloaded", "success");
         });
 
         dom.btnExportExcel.addEventListener("click", () => {
-            downloadFile(
+            downloadExport(
                 `/api/export/excel?year=${state.year}&month=${state.month}`
             );
             toast("Excel downloaded", "success");
