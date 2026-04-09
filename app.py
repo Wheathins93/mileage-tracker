@@ -13,15 +13,16 @@ Changes from v1:
 - All queries scoped to the requesting user
 """
 
+import copy
 import csv
 import io
+import os
 import calendar
 from datetime import datetime
 
 from flask import Flask, render_template, request, jsonify, Response
 
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl import load_workbook
 
 from database import get_db, init_db, create_user, authenticate_user
 from routes_data import (
@@ -34,6 +35,11 @@ from routes_data import (
 )
 
 app = Flask(__name__)
+
+TEMPLATE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "Blank Expense Reimbursement Form - 2026.xlsx",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +507,18 @@ def api_export_csv():
 @app.route("/api/export/excel")
 @require_user
 def api_export_excel():
-    """Export entries as an Excel reimbursement form."""
+    """Export entries using the official expense reimbursement template.
+
+    The template has 10 pre-formatted data rows (9–18) with formulas:
+      - Column E: ``=D{n}*0.725`` (mileage reimbursement)
+      - Columns F–I: other expense categories (default 0)
+      - Column J: ``=SUM(E{n}:I{n})`` (row total)
+      - Row 19: column totals via ``=SUM()``
+
+    This function fills columns A–D with tracker data and preserves all
+    formulas and formatting.  If entries exceed 10, extra rows are
+    inserted with cloned formatting and formulas.
+    """
     user_id = get_user_id()
     year = request.args.get("year", type=int)
     month = request.args.get("month", type=int)
@@ -515,120 +532,96 @@ def api_export_excel():
            ORDER BY day, id""",
         (user_id, year, month),
     ).fetchall()
+
+    # Look up display name for the Name field
+    user_row = conn.execute(
+        "SELECT display_name FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
     conn.close()
 
+    display_name = user_row["display_name"] if user_row else ""
     month_name = calendar.month_name[month]
-    filename = f"mileage_reimbursement_{month_name}_{year}.xlsx"
+    filename = f"expense_reimbursement_{month_name}_{year}.xlsx"
 
-    wb = Workbook()
+    # --- Load the official template ---
+    wb = load_workbook(TEMPLATE_PATH)
     ws = wb.active
-    ws.title = "Mileage Reimbursement"
 
-    # Styles
-    title_font = Font(name="Calibri", size=16, bold=True, color="1a1a2e")
-    subtitle_font = Font(name="Calibri", size=11, color="555555")
-    header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
-    header_fill = PatternFill(
-        start_color="2d3a4a", end_color="2d3a4a", fill_type="solid"
-    )
-    data_font = Font(name="Calibri", size=10)
-    total_font = Font(name="Calibri", size=11, bold=True, color="1a1a2e")
-    total_fill = PatternFill(
-        start_color="e8f0fe", end_color="e8f0fe", fill_type="solid"
-    )
-    thin_border = Border(
-        left=Side(style="thin", color="cccccc"),
-        right=Side(style="thin", color="cccccc"),
-        top=Side(style="thin", color="cccccc"),
-        bottom=Side(style="thin", color="cccccc"),
-    )
+    # Template layout constants
+    FIRST_DATA_ROW = 9      # First entry row
+    TEMPLATE_ROWS = 10      # Template has rows 9–18 for data
+    TOTALS_ROW = 19         # Row with SUM formulas
 
-    # Column widths
-    for i, w in enumerate([14, 6, 18, 18, 12, 10, 16, 35, 25], 1):
-        ws.column_dimensions[chr(64 + i)].width = w
+    num_entries = len(rows)
+    extra_rows = max(0, num_entries - TEMPLATE_ROWS)
 
-    # Title
-    ws.merge_cells("A1:I1")
-    ws["A1"] = "Mileage Reimbursement Report"
-    ws["A1"].font = title_font
-    ws["A1"].alignment = Alignment(horizontal="center")
+    # --- Insert extra rows if more than 10 entries ---
+    if extra_rows > 0:
+        # Insert rows above the totals row.  This pushes the totals row
+        # (and everything below it) down while keeping the data region
+        # contiguous.
+        ws.insert_rows(FIRST_DATA_ROW + TEMPLATE_ROWS, amount=extra_rows)
 
-    # Subtitle
-    ws.merge_cells("A2:I2")
-    ws["A2"] = f"{month_name} {year}  •  Rate: ${REIMBURSEMENT_RATE}/mile"
-    ws["A2"].font = subtitle_font
-    ws["A2"].alignment = Alignment(horizontal="center")
+        # Clone formatting and formulas from the last template row into
+        # each new row so the sheet looks consistent.
+        source_row = FIRST_DATA_ROW + TEMPLATE_ROWS - 1  # row 18
+        for offset in range(extra_rows):
+            new_row = FIRST_DATA_ROW + TEMPLATE_ROWS + offset
+            for col in range(1, 11):  # A–J
+                src_cell = ws.cell(
+                    row=source_row, column=col
+                )
+                dst_cell = ws.cell(row=new_row, column=col)
+                # Copy style
+                dst_cell.font = copy.copy(src_cell.font)
+                dst_cell.border = copy.copy(src_cell.border)
+                dst_cell.fill = copy.copy(src_cell.fill)
+                dst_cell.number_format = src_cell.number_format
+                dst_cell.alignment = copy.copy(src_cell.alignment)
+            # Set formulas for the new row
+            ws.cell(row=new_row, column=5).value = f"=D{new_row}*0.725"
+            ws.cell(row=new_row, column=6).value = 0   # Fuel
+            ws.cell(row=new_row, column=7).value = 0   # Meals/Ent
+            ws.cell(row=new_row, column=8).value = 0   # Phone
+            ws.cell(row=new_row, column=9).value = 0   # Other
+            ws.cell(row=new_row, column=10).value = \
+                f"=SUM(E{new_row}:I{new_row})"
 
-    # Headers
-    headers = [
-        "Date", "Day", "From", "To", "Route",
-        "Miles", "Reimbursement", "Business Purpose", "Notes",
-    ]
-    for col, h in enumerate(headers, 1):
-        cell = ws.cell(row=4, column=col, value=h)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin_border
+        # Update the TOTALS row formulas to span all data rows
+        actual_totals_row = TOTALS_ROW + extra_rows
+        last_data_row = FIRST_DATA_ROW + num_entries - 1
+        for col_letter in ("D", "E", "F", "G", "H", "I"):
+            ws[f"{col_letter}{actual_totals_row}"] = \
+                f"=SUM({col_letter}{FIRST_DATA_ROW}:" \
+                f"{col_letter}{last_data_row})"
+        ws[f"J{actual_totals_row}"] = \
+            f"=SUM(E{actual_totals_row}:I{actual_totals_row})"
 
-    # Data
-    total_miles = 0
-    total_reimb = 0
+    # --- Fill header fields ---
+    ws["B5"] = display_name   # Name
+
+    # --- Fill data rows ---
     for i, r in enumerate(rows):
-        row_num = 5 + i
-        values = [
-            r["date"], r["day"], r["origin_branch"],
-            r["destination_branch"], r["route_name"],
-            r["miles"], r["reimbursement_amount"],
-            r["business_purpose"], r["notes"],
-        ]
-        for col, val in enumerate(values, 1):
-            cell = ws.cell(row=row_num, column=col, value=val)
-            cell.font = data_font
-            cell.border = thin_border
-            if col == 6:
-                cell.number_format = "0.00"
-            elif col == 7:
-                cell.number_format = '"$"#,##0.00'
-        total_miles += r["miles"]
-        total_reimb += r["reimbursement_amount"]
+        row_num = FIRST_DATA_ROW + i
 
-    # Totals
-    total_row = 5 + len(rows)
-    ws.cell(row=total_row, column=5, value="TOTALS").font = total_font
-    ws.cell(row=total_row, column=5).alignment = Alignment(horizontal="right")
+        # A: Date (as a proper datetime so the m/d/yy format applies)
+        ws.cell(row=row_num, column=1).value = datetime(
+            int(r["year"]), int(r["month"]), int(r["day"])
+        )
 
-    miles_cell = ws.cell(
-        row=total_row, column=6, value=round(total_miles, 2)
-    )
-    miles_cell.font = total_font
-    miles_cell.fill = total_fill
-    miles_cell.border = thin_border
-    miles_cell.number_format = "0.00"
+        # B: Description — origin → destination via route
+        ws.cell(row=row_num, column=2).value = (
+            f"{r['origin_branch']} to "
+            f"{r['destination_branch']} via {r['route_name']}"
+        )
 
-    reimb_cell = ws.cell(
-        row=total_row, column=7, value=round(total_reimb, 2)
-    )
-    reimb_cell.font = total_font
-    reimb_cell.fill = total_fill
-    reimb_cell.border = thin_border
-    reimb_cell.number_format = '"$"#,##0.00'
+        # C: Business Purpose
+        ws.cell(row=row_num, column=3).value = r["business_purpose"]
 
-    # Signature
-    sig_row = total_row + 3
-    ws.merge_cells(f"A{sig_row}:D{sig_row}")
-    ws[f"A{sig_row}"] = "Employee Signature: ________________________"
-    ws[f"A{sig_row}"].font = Font(
-        name="Calibri", size=10, color="333333"
-    )
-    ws.merge_cells(f"F{sig_row}:I{sig_row}")
-    ws[f"F{sig_row}"] = "Date: ________________________"
-    ws[f"F{sig_row}"].font = Font(
-        name="Calibri", size=10, color="333333"
-    )
+        # D: Miles (numeric — the E column formula multiplies this)
+        ws.cell(row=row_num, column=4).value = r["miles"]
 
-    ws.print_title_rows = "1:4"
-
+    # --- Save to buffer ---
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)

@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.1.0 — Official Expense Template Export (2026-04-09)
+
+### Changes
+- **Excel export now uses the official American Bank Expense Statement template** (`Blank Expense Reimbursement Form - 2026.xlsx`). Exports preserve the bank's exact formatting, logo placeholder, account codes (#455160, #455370, #455120), and approval/ACH sections.
+- User's display name auto-fills the **Name** field (cell B5)
+- Entry dates are written as proper `datetime` values so the template's `m/d/yy` format applies correctly
+- **Description** column (B) shows `"{origin} to {destination} via {route}"`
+- **Business Purpose** column (C) is mapped from the tracker's purpose field
+- **Miles** column (D) is filled numerically — the template's `=D{n}*0.725` formula in column E auto-calculates reimbursement
+- All existing formulas (`=D*0.725`, `=SUM(E:I)`, TOTALS row) are preserved
+- If more than 10 entries exist, extra rows are dynamically inserted with cloned formatting and formulas
+- Replaced the old custom-built Excel export entirely — no more `Workbook()` from scratch
+
+### Technical
+- `app.py`: `api_export_excel()` now uses `load_workbook(TEMPLATE_PATH)` instead of building a sheet from scratch
+- Removed unused `openpyxl.styles` imports (Font, Alignment, Border, Side, PatternFill)
+- Added `copy` and `os` imports for style cloning and template path resolution
+- Template file included in repo as `Blank Expense Reimbursement Form - 2026.xlsx`
+
+---
+
 ## v3.0.0 — PIN-Based Login (2026-04-09)
 
 ### Problem Solved
