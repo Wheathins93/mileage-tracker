@@ -1,5 +1,38 @@
 # Changelog
 
+## v4.0.0 — Mobile-First Redesign & Bug Fixes (2026-04-09)
+
+### Bugs Fixed
+- **iOS white screen after Excel download** — On iPhone home-screen web apps, dismissing the Excel download popup left a white screen with no way back. Root cause: `URL.createObjectURL()` + `<a>.click()` navigated the iOS standalone WebKit view away from the app. Fix: detect iOS standalone mode and use a hidden iframe for downloads instead, keeping the main app view intact.
+- **PIN login "no user exists"** — Improved error messaging to distinguish between "wrong PIN" and "no account found", directing users to register if needed. Added a note in README about Render.com's ephemeral filesystem wiping the SQLite DB on each deploy (the root cause for deployed environments).
+- **Mobile layout requires zoom-out** — Complete CSS rewrite with mobile-first approach. The UI now fits iPhone screens without any need to zoom out.
+
+### Changes
+- **Mobile-first CSS** — All styles now start from the smallest screen (320px+), scaling up via `min-width` media queries at 480px and 768px breakpoints. Previously used desktop-first with a single `max-width: 640px` breakpoint.
+- **iOS safe-area support** — Added `viewport-fit=cover` and `env(safe-area-inset-*)` padding for notched iPhones.
+- **Prevent iOS zoom on input focus** — All text inputs and selects use `font-size: 16px` to prevent Safari's auto-zoom behavior.
+- **Touch-optimized** — All interactive elements meet 44px minimum touch target. Added `:active` states for mobile feedback.
+- **Summary cards** — Stack vertically on phones, horizontal row on tablet+.
+- **Purpose column** — Hidden on mobile to save table width, visible on desktop.
+- **Toast notifications** — Centered on mobile, bottom-right on desktop.
+- **Download toast text** — Changed from past-tense "downloaded" to "downloading…" for accuracy.
+
+### Code Quality
+- **Resource leak fixes** — All `get_db()` connections now wrapped in `try/finally` blocks across `app.py` and `database.py` to ensure cleanup on exceptions.
+- **Import cleanup** — Moved `from functools import wraps` to top-level imports instead of inside the decorator function.
+- **Removed legacy comments** — Cleaned up v1/v2/v3 changelog comments scattered throughout Python and JS source files.
+- **Removed unused code** — Removed `$$` selector alias (never used), `.checkbox-custom` span (display:none), leftover CSS version markers.
+- **README updated** — Added Render.com persistence warning, updated project structure, changed "Mobile Friendly" → "Mobile First".
+
+### Technical
+- `style.css`: Complete rewrite — mobile-first with `min-width` breakpoints; iOS safe-area insets; consistent touch targets
+- `app.js`: iOS standalone detection via `navigator.standalone`; iframe-based download for iOS; removed unused `$$` helper
+- `app.py`: All DB connections use try/finally; improved login error message; top-level `wraps` import
+- `database.py`: try/finally on all connections; added `get_user_count()` helper; cleaned docstrings
+- `index.html`: Added `maximum-scale=1.0, user-scalable=no, viewport-fit=cover`; added `theme-color` and `mobile-web-app-capable` metas; added `purpose-col` class to table header
+
+---
+
 ## v3.1.0 — Official Expense Template Export (2026-04-09)
 
 ### Changes

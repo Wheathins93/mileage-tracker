@@ -1,16 +1,12 @@
 """
-Mileage Tracker — Flask Application (v3)
+Mileage Tracker — Flask Application
 
-Changes from v2:
-- Replaced cookie-based user identity with PIN-based login
-- Added /api/auth/register and /api/auth/login endpoints
-- User identity sent via X-User-Id header from the frontend
-- Removed cookie dependency entirely
-
-Changes from v1:
-- Multi-user support via user_id
-- "Include return trip" creates two entries in one submit
-- All queries scoped to the requesting user
+Endpoints:
+  - /api/auth/*       — PIN-based registration, login, verification
+  - /api/branches     — Branch list
+  - /api/routes       — Routes between branches
+  - /api/entries      — CRUD for mileage entries (scoped to user)
+  - /api/export/*     — CSV and Excel export
 """
 
 import copy
@@ -19,6 +15,7 @@ import io
 import os
 import calendar
 from datetime import datetime
+from functools import wraps
 
 from flask import Flask, render_template, request, jsonify, Response
 
@@ -59,8 +56,6 @@ def get_user_id():
 
 def require_user(f):
     """Decorator that returns 401 if no user_id header is present."""
-    from functools import wraps
-
     @wraps(f)
     def decorated(*args, **kwargs):
         if not get_user_id():
@@ -88,7 +83,7 @@ def _validate_entry(data):
 
 def _build_entry_values(data, user_id, *, override_origin=None,
                         override_dest=None, override_route=None):
-    """Build the tuple of values for an INSERT or UPDATE.
+    """Build the tuple of values for an INSERT.
 
     Optional overrides let us reuse this for the return-trip entry.
     Returns (values_tuple, error_string_or_None).
@@ -182,7 +177,9 @@ def api_login():
 
     user = authenticate_user(pin)
     if user is None:
-        return jsonify({"error": "Invalid PIN. Please try again."}), 401
+        return jsonify({
+            "error": "No account found for that PIN. Tap 'Create an account' to register."
+        }), 401
 
     return jsonify({
         "user_id": user["id"],
@@ -202,10 +199,12 @@ def api_verify():
         return jsonify({"valid": False}), 400
 
     conn = get_db()
-    user = conn.execute(
-        "SELECT id, display_name FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
-    conn.close()
+    try:
+        user = conn.execute(
+            "SELECT id, display_name FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    finally:
+        conn.close()
 
     if user:
         return jsonify({
@@ -269,13 +268,15 @@ def api_entries():
         return jsonify({"error": "year and month are required"}), 400
 
     conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM entries
-           WHERE user_id = ? AND year = ? AND month = ?
-           ORDER BY day, id""",
-        (user_id, year, month),
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM entries
+               WHERE user_id = ? AND year = ? AND month = ?
+               ORDER BY day, id""",
+            (user_id, year, month),
+        ).fetchall()
+    finally:
+        conn.close()
 
     entries = [dict(r) for r in rows]
     total_miles = round(sum(e["miles"] for e in entries), 2)
@@ -309,45 +310,46 @@ def api_create_entry():
         return jsonify({"errors": [err]}), 400
 
     conn = get_db()
-    created = []
+    try:
+        created = []
 
-    # --- Main entry ---
-    cursor = conn.execute(INSERT_SQL, values)
-    main_id = cursor.lastrowid
-    main_row = conn.execute(
-        "SELECT * FROM entries WHERE id = ?", (main_id,)
-    ).fetchone()
-    created.append(dict(main_row))
+        # --- Main entry ---
+        cursor = conn.execute(INSERT_SQL, values)
+        main_id = cursor.lastrowid
+        main_row = conn.execute(
+            "SELECT * FROM entries WHERE id = ?", (main_id,)
+        ).fetchone()
+        created.append(dict(main_row))
 
-    # --- Return trip (if requested) ---
-    if data.get("include_return"):
-        return_routes = get_routes(
-            data["destination_branch"], data["origin_branch"]
-        )
-        if return_routes:
-            # Prefer same route name for the return; fall back to first
-            return_route = next(
-                (r for r in return_routes
-                 if r["route"] == data["route_name"]),
-                return_routes[0],
+        # --- Return trip (if requested) ---
+        if data.get("include_return"):
+            return_routes = get_routes(
+                data["destination_branch"], data["origin_branch"]
             )
+            if return_routes:
+                return_route = next(
+                    (r for r in return_routes
+                     if r["route"] == data["route_name"]),
+                    return_routes[0],
+                )
 
-            ret_values, ret_err = _build_entry_values(
-                data, user_id,
-                override_origin=data["destination_branch"],
-                override_dest=data["origin_branch"],
-                override_route=return_route["route"],
-            )
-            if ret_values and not ret_err:
-                cursor2 = conn.execute(INSERT_SQL, ret_values)
-                ret_id = cursor2.lastrowid
-                ret_row = conn.execute(
-                    "SELECT * FROM entries WHERE id = ?", (ret_id,)
-                ).fetchone()
-                created.append(dict(ret_row))
+                ret_values, ret_err = _build_entry_values(
+                    data, user_id,
+                    override_origin=data["destination_branch"],
+                    override_dest=data["origin_branch"],
+                    override_route=return_route["route"],
+                )
+                if ret_values and not ret_err:
+                    cursor2 = conn.execute(INSERT_SQL, ret_values)
+                    ret_id = cursor2.lastrowid
+                    ret_row = conn.execute(
+                        "SELECT * FROM entries WHERE id = ?", (ret_id,)
+                    ).fetchone()
+                    created.append(dict(ret_row))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
     return jsonify({"entries": created, "count": len(created)}), 201
 
@@ -384,23 +386,25 @@ def api_update_entry(entry_id):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_db()
-    conn.execute(
-        """UPDATE entries
-           SET year = ?, month = ?, day = ?, date = ?, origin_branch = ?,
-               destination_branch = ?, route_name = ?, miles = ?,
-               reimbursement_amount = ?, business_purpose = ?, notes = ?,
-               updated_at = ?
-           WHERE id = ? AND user_id = ?""",
-        (year, month, day, date_str, data["origin_branch"],
-         data["destination_branch"], data["route_name"], miles,
-         reimbursement, purpose, notes, now, entry_id, user_id),
-    )
-    conn.commit()
-    row = conn.execute(
-        "SELECT * FROM entries WHERE id = ? AND user_id = ?",
-        (entry_id, user_id),
-    ).fetchone()
-    conn.close()
+    try:
+        conn.execute(
+            """UPDATE entries
+               SET year = ?, month = ?, day = ?, date = ?, origin_branch = ?,
+                   destination_branch = ?, route_name = ?, miles = ?,
+                   reimbursement_amount = ?, business_purpose = ?, notes = ?,
+                   updated_at = ?
+               WHERE id = ? AND user_id = ?""",
+            (year, month, day, date_str, data["origin_branch"],
+             data["destination_branch"], data["route_name"], miles,
+             reimbursement, purpose, notes, now, entry_id, user_id),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM entries WHERE id = ? AND user_id = ?",
+            (entry_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
 
     if row is None:
         return jsonify({"error": "Entry not found"}), 404
@@ -414,16 +418,18 @@ def api_delete_entry(entry_id):
     user_id = get_user_id()
 
     conn = get_db()
-    row = conn.execute(
-        "SELECT id FROM entries WHERE id = ? AND user_id = ?",
-        (entry_id, user_id),
-    ).fetchone()
-    if row is None:
+    try:
+        row = conn.execute(
+            "SELECT id FROM entries WHERE id = ? AND user_id = ?",
+            (entry_id, user_id),
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "Entry not found"}), 404
+        conn.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
+        conn.commit()
+    finally:
         conn.close()
-        return jsonify({"error": "Entry not found"}), 404
-    conn.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
-    conn.commit()
-    conn.close()
+
     return jsonify({"deleted": entry_id})
 
 
@@ -440,13 +446,17 @@ def api_clear_month():
         return jsonify({"error": "year and month are required"}), 400
 
     conn = get_db()
-    result = conn.execute(
-        "DELETE FROM entries WHERE user_id = ? AND year = ? AND month = ?",
-        (user_id, year, month),
-    )
-    conn.commit()
-    conn.close()
-    return jsonify({"deleted_count": result.rowcount})
+    try:
+        result = conn.execute(
+            "DELETE FROM entries WHERE user_id = ? AND year = ? AND month = ?",
+            (user_id, year, month),
+        )
+        conn.commit()
+        deleted = result.rowcount
+    finally:
+        conn.close()
+
+    return jsonify({"deleted_count": deleted})
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +473,15 @@ def api_export_csv():
         return jsonify({"error": "year and month are required"}), 400
 
     conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM entries
-           WHERE user_id = ? AND year = ? AND month = ?
-           ORDER BY day, id""",
-        (user_id, year, month),
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM entries
+               WHERE user_id = ? AND year = ? AND month = ?
+               ORDER BY day, id""",
+            (user_id, year, month),
+        ).fetchall()
+    finally:
+        conn.close()
 
     month_name = calendar.month_name[month]
     filename = f"mileage_{month_name}_{year}.csv"
@@ -526,18 +538,19 @@ def api_export_excel():
         return jsonify({"error": "year and month are required"}), 400
 
     conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM entries
-           WHERE user_id = ? AND year = ? AND month = ?
-           ORDER BY day, id""",
-        (user_id, year, month),
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM entries
+               WHERE user_id = ? AND year = ? AND month = ?
+               ORDER BY day, id""",
+            (user_id, year, month),
+        ).fetchall()
 
-    # Look up display name for the Name field
-    user_row = conn.execute(
-        "SELECT display_name FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
-    conn.close()
+        user_row = conn.execute(
+            "SELECT display_name FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+    finally:
+        conn.close()
 
     display_name = user_row["display_name"] if user_row else ""
     month_name = calendar.month_name[month]
@@ -557,28 +570,20 @@ def api_export_excel():
 
     # --- Insert extra rows if more than 10 entries ---
     if extra_rows > 0:
-        # Insert rows above the totals row.  This pushes the totals row
-        # (and everything below it) down while keeping the data region
-        # contiguous.
         ws.insert_rows(FIRST_DATA_ROW + TEMPLATE_ROWS, amount=extra_rows)
 
-        # Clone formatting and formulas from the last template row into
-        # each new row so the sheet looks consistent.
         source_row = FIRST_DATA_ROW + TEMPLATE_ROWS - 1  # row 18
         for offset in range(extra_rows):
             new_row = FIRST_DATA_ROW + TEMPLATE_ROWS + offset
             for col in range(1, 11):  # A–J
-                src_cell = ws.cell(
-                    row=source_row, column=col
-                )
+                src_cell = ws.cell(row=source_row, column=col)
                 dst_cell = ws.cell(row=new_row, column=col)
-                # Copy style
                 dst_cell.font = copy.copy(src_cell.font)
                 dst_cell.border = copy.copy(src_cell.border)
                 dst_cell.fill = copy.copy(src_cell.fill)
                 dst_cell.number_format = src_cell.number_format
                 dst_cell.alignment = copy.copy(src_cell.alignment)
-            # Set formulas for the new row
+            # Formulas for the new row
             ws.cell(row=new_row, column=5).value = f"=D{new_row}*0.725"
             ws.cell(row=new_row, column=6).value = 0   # Fuel
             ws.cell(row=new_row, column=7).value = 0   # Meals/Ent
@@ -587,7 +592,7 @@ def api_export_excel():
             ws.cell(row=new_row, column=10).value = \
                 f"=SUM(E{new_row}:I{new_row})"
 
-        # Update the TOTALS row formulas to span all data rows
+        # Update the TOTALS row formulas
         actual_totals_row = TOTALS_ROW + extra_rows
         last_data_row = FIRST_DATA_ROW + num_entries - 1
         for col_letter in ("D", "E", "F", "G", "H", "I"):
@@ -609,7 +614,7 @@ def api_export_excel():
             int(r["year"]), int(r["month"]), int(r["day"])
         )
 
-        # B: Description — origin → destination via route
+        # B: Description
         ws.cell(row=row_num, column=2).value = (
             f"{r['origin_branch']} to "
             f"{r['destination_branch']} via {r['route_name']}"

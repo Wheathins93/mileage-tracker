@@ -1,13 +1,15 @@
 /**
- * Mileage Tracker — Frontend Application (v3)
+ * Mileage Tracker — Frontend Application (v4)
  *
- * Changes from v2:
- * - Replaced cookie-based user identity with PIN-based login
- * - Login/register screen shown before tracker is accessible
- * - All API calls send X-User-Id header instead of cookie
- * - Session survives iOS storage eviction because user can re-login
+ * v4 changes:
+ * - Fixed iOS standalone white-screen after Excel/CSV download
+ * - Fixed reliability of PIN login (verify session tolerance)
+ * - Mobile-first UX improvements
+ * - Removed leftover v1/v2 code comments
  *
- * Retained from v2:
+ * Features:
+ * - PIN-based login/register
+ * - All API calls send X-User-Id header
  * - "Include return trip" checkbox with live preview
  * - Home branch setting with auto-fill
  * - Swap branches button
@@ -28,6 +30,11 @@
     const STORAGE_KEY_USER = "mileage_user_id";
     const STORAGE_KEY_NAME = "mileage_display_name";
 
+    // Detect iOS standalone mode (saved to homescreen)
+    const IS_IOS_STANDALONE =
+        ("standalone" in window.navigator && window.navigator.standalone) ||
+        window.matchMedia("(display-mode: standalone)").matches;
+
     // ========================================================================
     // State
     // ========================================================================
@@ -42,15 +49,13 @@
         editingId: null,
         filterDay: "",
         homeBranch: "",
-        // Cache of routes for the current origin→dest (used for return preview)
         currentRoutes: [],
     };
 
     // ========================================================================
-    // DOM References (lazy — filled after DOM ready)
+    // DOM References
     // ========================================================================
     const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => document.querySelectorAll(sel);
 
     let dom = {};
 
@@ -136,19 +141,17 @@
                 "Content-Type": "application/json",
                 ...(options.headers || {}),
             };
-            // Attach user_id header when authenticated
             if (state.userId) {
                 headers["X-User-Id"] = state.userId;
             }
-            const res = await fetch(url, {
-                ...options,
-                headers,
-            });
+            const res = await fetch(url, { ...options, headers });
+
             // For file downloads, return the response directly
-            if (res.headers.get("content-type")?.includes("text/csv") ||
-                res.headers.get("content-type")?.includes("spreadsheetml")) {
+            const ct = res.headers.get("content-type") || "";
+            if (ct.includes("text/csv") || ct.includes("spreadsheetml")) {
                 return res;
             }
+
             const data = await res.json();
             if (!res.ok) {
                 const msg = data.errors
@@ -202,7 +205,7 @@
             }
             return false;
         } catch {
-            // Network error — give benefit of the doubt if we have a stored id
+            // Network error — allow offline access if we have a stored id
             return !!state.userId;
         }
     }
@@ -237,14 +240,16 @@
             });
             const data = await res.json();
             if (!res.ok) {
-                dom.authLoginError.textContent = data.error || "Login failed.";
+                dom.authLoginError.textContent =
+                    data.error || "Login failed. Please try again.";
                 return;
             }
             saveSession(data.user_id, data.display_name);
             showAppScreen();
             await initTracker();
         } catch {
-            dom.authLoginError.textContent = "Network error. Please try again.";
+            dom.authLoginError.textContent =
+                "Network error. Please try again.";
         }
     }
 
@@ -258,7 +263,7 @@
             dom.authRegError.textContent = "Please enter your name.";
             return;
         }
-        if (!pin || !(/^\d{4,8}$/.test(pin))) {
+        if (!pin || !/^\d{4,8}$/.test(pin)) {
             dom.authRegError.textContent = "PIN must be 4–8 digits.";
             return;
         }
@@ -271,14 +276,16 @@
             });
             const data = await res.json();
             if (!res.ok) {
-                dom.authRegError.textContent = data.error || "Registration failed.";
+                dom.authRegError.textContent =
+                    data.error || "Registration failed.";
                 return;
             }
             saveSession(data.user_id, data.display_name);
             showAppScreen();
             await initTracker();
         } catch {
-            dom.authRegError.textContent = "Network error. Please try again.";
+            dom.authRegError.textContent =
+                "Network error. Please try again.";
         }
     }
 
@@ -289,7 +296,6 @@
             () => {
                 clearSession();
                 showAuthScreen();
-                // Reset the login form
                 dom.authLoginPin.value = "";
                 dom.authRegPin.value = "";
                 dom.authRegName.value = "";
@@ -397,11 +403,9 @@
                 )
                 .join("");
 
-        // Pre-fill origin with home branch
         dom.entryOrigin.innerHTML = makeBranchOptions(state.homeBranch);
         dom.entryDest.innerHTML = makeBranchOptions();
 
-        // Populate home branch selector
         dom.homeBranch.innerHTML =
             `<option value="">Not set</option>` +
             state.branches
@@ -566,7 +570,6 @@
         const dest = dom.entryDest.value;
         const routeName = dom.entryRoute.value;
 
-        // Hide return trip row during edits
         if (state.editingId) {
             dom.returnTripRow.style.display = "none";
             return;
@@ -579,7 +582,6 @@
             return;
         }
 
-        // Look up the reverse route
         try {
             const returnRoutes = await api(
                 `/api/routes?origin=${encodeURIComponent(dest)}&destination=${encodeURIComponent(origin)}`
@@ -594,7 +596,6 @@
                 return;
             }
 
-            // Prefer same route name, fallback to first
             const matched =
                 returnRoutes.find((r) => r.route === routeName) ||
                 returnRoutes[0];
@@ -643,7 +644,6 @@
 
         populateDays();
 
-        // Re-set home branch as origin
         if (state.homeBranch) {
             dom.entryOrigin.value = state.homeBranch;
         }
@@ -696,7 +696,6 @@
             return;
         }
 
-        // Include return trip flag (only for new entries)
         if (!state.editingId && dom.includeReturn.checked) {
             payload.include_return = true;
         }
@@ -756,7 +755,7 @@
                 toast("Entry duplicated", "success");
                 await loadEntries();
             } catch {
-                /* handled */
+                /* handled by api() */
             }
         } else if (action === "delete") {
             showConfirm(
@@ -770,7 +769,7 @@
                         toast("Entry deleted", "success");
                         await loadEntries();
                     } catch {
-                        /* handled */
+                        /* handled by api() */
                     }
                 }
             );
@@ -798,7 +797,7 @@
                     resetForm();
                     await loadEntries();
                 } catch {
-                    /* handled */
+                    /* handled by api() */
                 }
             }
         );
@@ -855,32 +854,74 @@
     }
 
     // ========================================================================
-    // Export
+    // Export — iOS-safe download
     // ========================================================================
-    function downloadExport(url) {
-        // For authenticated exports, we need to add the header.
-        // Use fetch + blob approach instead of direct link click.
-        fetch(url, {
-            headers: { "X-User-Id": state.userId || "" },
-        })
-            .then((res) => {
-                if (!res.ok) throw new Error("Export failed");
-                const disposition = res.headers.get("content-disposition") || "";
-                const match = disposition.match(/filename=(.+)/);
-                const filename = match ? match[1] : "export";
-                return res.blob().then((blob) => ({ blob, filename }));
-            })
-            .then(({ blob, filename }) => {
-                const url = URL.createObjectURL(blob);
+
+    /**
+     * Download a file via fetch + blob.
+     *
+     * On iOS standalone web apps (saved to homescreen), using
+     * `<a>.click()` or `URL.createObjectURL()` can navigate the
+     * WebKit view away from the app and show a white screen.
+     *
+     * Fix: On iOS standalone, we open the blob URL in a new window,
+     * which keeps the main app intact. On all other platforms we use
+     * the standard invisible-anchor approach.
+     */
+    async function downloadExport(url) {
+        try {
+            const res = await fetch(url, {
+                headers: { "X-User-Id": state.userId || "" },
+            });
+
+            if (!res.ok) throw new Error("Export failed");
+
+            const disposition = res.headers.get("content-disposition") || "";
+            const match = disposition.match(/filename=(.+)/);
+            const filename = match ? match[1].replace(/['"]/g, "") : "export";
+            const blob = await res.blob();
+
+            if (IS_IOS_STANDALONE) {
+                // iOS standalone: use a temporary iframe or open in a new
+                // tab. Opening a new window works best to avoid hijacking
+                // the standalone app view.
+                const blobUrl = URL.createObjectURL(blob);
+
+                // Use a hidden iframe to trigger the download without
+                // navigating the main window.
+                const iframe = document.createElement("iframe");
+                iframe.style.display = "none";
+                document.body.appendChild(iframe);
+
+                // Write a download link into the iframe and click it
+                iframe.contentDocument.open();
+                iframe.contentDocument.write(`
+                    <html><body>
+                    <a id="dl" download="${escHtml(filename)}" href="${blobUrl}">download</a>
+                    <script>document.getElementById('dl').click();</script>
+                    </body></html>
+                `);
+                iframe.contentDocument.close();
+
+                // Clean up after a short delay
+                setTimeout(() => {
+                    URL.revokeObjectURL(blobUrl);
+                    iframe.remove();
+                }, 5000);
+            } else {
+                // Standard approach for desktop and Android
+                const blobUrl = URL.createObjectURL(blob);
                 const a = document.createElement("a");
-                a.href = url;
+                a.href = blobUrl;
                 a.download = filename;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-                URL.revokeObjectURL(url);
-            })
-            .catch(() => toast("Export failed", "error"));
+                URL.revokeObjectURL(blobUrl);
+            }
+        } catch {
+            toast("Export failed", "error");
+        }
     }
 
     // ========================================================================
@@ -923,7 +964,6 @@
         // --- Home branch ---
         dom.homeBranch.addEventListener("change", () => {
             saveHomeBranch(dom.homeBranch.value);
-            // Update origin dropdown if not editing
             if (!state.editingId && state.homeBranch) {
                 dom.entryOrigin.value = state.homeBranch;
                 loadRoutes();
@@ -988,7 +1028,6 @@
 
         // --- Return trip checkbox ---
         dom.includeReturn.addEventListener("change", () => {
-            // Visual feedback: update button text
             if (dom.includeReturn.checked && !state.editingId) {
                 dom.btnSubmit.innerHTML = `
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
@@ -1030,14 +1069,14 @@
             downloadExport(
                 `/api/export/csv?year=${state.year}&month=${state.month}`
             );
-            toast("CSV downloaded", "success");
+            toast("CSV downloading…", "success");
         });
 
         dom.btnExportExcel.addEventListener("click", () => {
             downloadExport(
                 `/api/export/excel?year=${state.year}&month=${state.month}`
             );
-            toast("Excel downloaded", "success");
+            toast("Excel downloading…", "success");
         });
 
         // --- Reset month ---

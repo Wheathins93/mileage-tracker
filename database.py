@@ -2,8 +2,9 @@
 Database initialization and helper functions for the Mileage Tracker.
 Uses SQLite for zero-config persistent storage.
 
-v3: Added users table for PIN-based authentication.
-v2: Added user_id column for multi-user support.
+Tables:
+  - entries: mileage log entries scoped to user_id
+  - users:   PIN-based authentication accounts
 """
 
 import hashlib
@@ -27,9 +28,7 @@ def init_db():
     """Create tables if they don't exist, and run migrations."""
     conn = get_db()
 
-    # Create the entries table (v2 schema with user_id).
-    # If the table already exists from v1, this is a no-op — the
-    # migration below will add the missing column.
+    # Entries table
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,13 +56,12 @@ def init_db():
     # v1 → v2 migration: add user_id column to existing databases
     _migrate_add_user_id(conn)
 
-    # Now that user_id column is guaranteed to exist, create its index
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_entries_user_id ON entries(user_id)"
     )
     conn.commit()
 
-    # v3: Create users table for PIN-based auth
+    # Users table for PIN-based auth
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
@@ -110,25 +108,27 @@ def create_user(pin, display_name):
     user_id = secrets.token_hex(16)
 
     conn = get_db()
-    # Ensure PIN is unique
-    existing = conn.execute(
-        "SELECT id FROM users WHERE pin_hash = ?", (pin_h,)
-    ).fetchone()
-    if existing:
-        conn.close()
-        return None
+    try:
+        # Ensure PIN is unique
+        existing = conn.execute(
+            "SELECT id FROM users WHERE pin_hash = ?", (pin_h,)
+        ).fetchone()
+        if existing:
+            conn.close()
+            return None
 
-    conn.execute(
-        """INSERT INTO users (id, pin_hash, display_name)
-           VALUES (?, ?, ?)""",
-        (user_id, pin_h, display_name.strip()),
-    )
-    conn.commit()
-    user = conn.execute(
-        "SELECT * FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
-    conn.close()
-    return dict(user) if user else None
+        conn.execute(
+            """INSERT INTO users (id, pin_hash, display_name)
+               VALUES (?, ?, ?)""",
+            (user_id, pin_h, display_name.strip()),
+        )
+        conn.commit()
+        user = conn.execute(
+            "SELECT * FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        return dict(user) if user else None
+    finally:
+        conn.close()
 
 
 def authenticate_user(pin):
@@ -139,17 +139,29 @@ def authenticate_user(pin):
     pin_h = hash_pin(pin)
 
     conn = get_db()
-    user = conn.execute(
-        "SELECT * FROM users WHERE pin_hash = ?", (pin_h,)
-    ).fetchone()
-    if user:
-        conn.execute(
-            "UPDATE users SET last_login = datetime('now', 'localtime') WHERE id = ?",
-            (user["id"],),
-        )
-        conn.commit()
-    conn.close()
-    return dict(user) if user else None
+    try:
+        user = conn.execute(
+            "SELECT * FROM users WHERE pin_hash = ?", (pin_h,)
+        ).fetchone()
+        if user:
+            conn.execute(
+                "UPDATE users SET last_login = datetime('now', 'localtime') WHERE id = ?",
+                (user["id"],),
+            )
+            conn.commit()
+        return dict(user) if user else None
+    finally:
+        conn.close()
+
+
+def get_user_count():
+    """Return the number of registered users."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()
+        return row["cnt"]
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

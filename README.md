@@ -10,7 +10,7 @@ A lightweight web app for tracking mileage between bank branches and calculating
 - **Monthly View** — See all entries for a selected month with running totals
 - **Edit / Delete / Duplicate** — Full CRUD on every entry with confirmation dialogs
 - **CSV Export** — Download a clean CSV of the month's entries
-- **Excel Export** — Download a formatted reimbursement form (.xlsx) with totals and signature line
+- **Excel Export** — Download a formatted reimbursement form (.xlsx) using the official bank template
 - **Reset Month** — Clear all entries for a month when you're ready to start fresh
 - **Filter by Day** — Quickly filter the table to a specific day
 - **Return Trip** — Checkbox to automatically create a round-trip entry
@@ -18,7 +18,7 @@ A lightweight web app for tracking mileage between bank branches and calculating
 - **Swap Branches** — Quick ⇄ button to reverse origin/destination
 - **Auto-generated Purpose** — If you leave "Business Purpose" blank, it auto-fills (e.g., "Mileage: Bellmead to Downtown via I-35")
 - **Printable** — Use Ctrl/Cmd+P for a clean print layout
-- **Mobile Friendly** — Responsive design works on phones and tablets
+- **Mobile First** — Responsive design optimized for iPhone home-screen use, then scales up for tablets and desktop
 
 ## Tech Stack
 
@@ -64,14 +64,18 @@ Mileage tracker/
 ├── database.py         # SQLite schema, migrations, user auth helpers
 ├── routes_data.py      # Mileage table & reimbursement logic
 ├── requirements.txt    # Python dependencies
+├── render.yaml         # Render.com deployment config
 ├── mileage.db          # SQLite database (created on first run)
+├── Blank Expense Reimbursement Form - 2026.xlsx
+│                       # Official bank template for Excel export
 ├── templates/
-│   └── index.html      # Main page template
+│   └── index.html      # Main page template (auth + app screens)
 ├── static/
 │   ├── css/
-│   │   └── style.css   # All styles
+│   │   └── style.css   # Mobile-first responsive styles
 │   └── js/
-│       └── app.js      # Frontend logic
+│       └── app.js      # Frontend logic (auth, CRUD, export)
+├── CHANGELOG.md
 └── README.md
 ```
 
@@ -84,6 +88,8 @@ The app uses a simple PIN-based login system:
 3. **iOS Friendly** — Unlike cookies, your PIN works even if the browser clears storage
 
 PINs are hashed server-side (SHA-256 with salt). Each PIN maps to a unique user ID, and all data is scoped to that user.
+
+> **Note on Render.com deployments:** Render's free tier uses an ephemeral filesystem. The SQLite database is recreated on each deploy. For persistent data on Render, consider upgrading to a plan with persistent disks, or migrating to a managed database like PostgreSQL.
 
 ## Mileage Table (Built-in)
 
