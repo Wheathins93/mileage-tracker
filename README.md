@@ -22,12 +22,13 @@ A lightweight web app for tracking mileage between bank branches and calculating
 
 ## Tech Stack
 
-| Layer     | Technology       |
-|-----------|------------------|
-| Backend   | Python / Flask   |
-| Database  | SQLite           |
-| Frontend  | HTML / CSS / JS  |
-| Excel     | openpyxl         |
+| Layer     | Technology                              |
+|-----------|-----------------------------------------|
+| Backend   | Python / Flask                          |
+| Database  | PostgreSQL (production) / SQLite (local)|
+| Frontend  | HTML / CSS / JS                         |
+| Excel     | openpyxl                                |
+| Hosting   | Render.com + Neon PostgreSQL (free)     |
 
 ## Quick Start
 
@@ -48,7 +49,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-The app will start at **http://127.0.0.1:5000**
+The app will start at **http://127.0.0.1:5000** using a local SQLite database.
 
 ### 4. Open in Browser
 
@@ -56,16 +57,40 @@ Navigate to [http://127.0.0.1:5000](http://127.0.0.1:5000)
 
 On first visit, you'll be prompted to create an account with your name and a PIN.
 
+## Deployment (Render + Neon)
+
+The app is designed to run on Render.com with a free Neon PostgreSQL database for persistent storage.
+
+### 1. Set Up Neon PostgreSQL (Free)
+
+1. Sign up at [neon.tech](https://neon.tech) (free tier: 512MB storage)
+2. Create a new project and database
+3. Copy the connection string — it looks like:
+   ```
+   postgresql://user:password@ep-xxx.us-east-2.aws.neon.tech/dbname?sslmode=require
+   ```
+
+### 2. Configure Render
+
+1. Push this repo to GitHub
+2. In [Render Dashboard](https://dashboard.render.com) → New → Web Service → connect your repo
+3. Go to **Environment** → Add environment variable:
+   - Key: `DATABASE_URL`
+   - Value: *(paste your Neon connection string)*
+4. Deploy — the app auto-creates tables on first startup
+
+> **Why not SQLite on Render?** Render's free tier uses an ephemeral filesystem that is wiped on every deploy. By using an external PostgreSQL database, your data persists across all deployments.
+
 ## Project Structure
 
 ```
 Mileage tracker/
 ├── app.py              # Flask application & API routes
-├── database.py         # SQLite schema, migrations, user auth helpers
+├── database.py         # Database layer (PostgreSQL + SQLite dual-backend)
 ├── routes_data.py      # Mileage table & reimbursement logic
 ├── requirements.txt    # Python dependencies
 ├── render.yaml         # Render.com deployment config
-├── mileage.db          # SQLite database (created on first run)
+├── mileage.db          # SQLite database (local dev only, auto-created)
 ├── Blank Expense Reimbursement Form - 2026.xlsx
 │                       # Official bank template for Excel export
 ├── templates/
@@ -89,7 +114,7 @@ The app uses a simple PIN-based login system:
 
 PINs are hashed server-side (SHA-256 with salt). Each PIN maps to a unique user ID, and all data is scoped to that user.
 
-> **Note on Render.com deployments:** Render's free tier uses an ephemeral filesystem. The SQLite database is recreated on each deploy. For persistent data on Render, consider upgrading to a plan with persistent disks, or migrating to a managed database like PostgreSQL.
+> **Production:** Set the `DATABASE_URL` environment variable to use PostgreSQL (e.g. Neon). Locally, the app uses SQLite automatically.
 
 ## Mileage Table (Built-in)
 
@@ -131,6 +156,7 @@ PINs are hashed server-side (SHA-256 with salt). Each PIN maps to a unique user 
 | POST   | `/api/auth/register`  | Create new user (PIN + name) |
 | POST   | `/api/auth/login`     | Log in with PIN              |
 | POST   | `/api/auth/verify`    | Verify stored session        |
+| GET    | `/api/auth/status`    | Check if any users exist     |
 | GET    | `/api/branches`       | List all branches            |
 | GET    | `/api/routes`         | Get routes between branches  |
 | GET    | `/api/mileage-table`  | Full mileage reference       |

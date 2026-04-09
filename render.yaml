@@ -7,9 +7,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.4"
-      - key: DB_PATH
-        value: /opt/render/data/mileage.db
-    disk:
-      name: mileage-data
-      mountPath: /opt/render/data
-      sizeGB: 1
+      # DATABASE_URL must be set in the Render dashboard.
+      # Get it from your Neon/Supabase PostgreSQL project.
+      # Example: postgresql://user:pass@host/dbname?sslmode=require

@@ -1,5 +1,37 @@
 # Changelog
 
+## v4.1.0 — PostgreSQL & Auth UX (2026-04-09)
+
+### Problem Solved
+Render.com's free tier uses an ephemeral filesystem, wiping the SQLite database on every deploy. Users lost their accounts and mileage data after each deployment. Additionally, the login screen always showed "Welcome Back" even when no users existed (e.g. after a DB wipe), confusing first-time visitors.
+
+### New Features
+- **PostgreSQL support** — The app now connects to an external PostgreSQL database (e.g. Neon, Supabase) when `DATABASE_URL` is set. Data survives Render redeploys because the database lives outside the ephemeral filesystem.
+- **SQLite fallback** — When `DATABASE_URL` is not set (local development), the app automatically falls back to SQLite. No configuration needed.
+- **Smart auth forms** — On first load, the app checks how many users exist. If zero, it shows the "Get Started" registration form instead of "Welcome Back". Users on a fresh deployment are no longer confused by a login form with no accounts to log into.
+- **New API endpoint** — `GET /api/auth/status` returns the user count so the frontend can decide which form to display.
+- **Context-aware errors** — Login now returns "No accounts exist yet" (empty DB) vs "No account found for that PIN" (wrong PIN).
+
+### Changes
+- **database.py rewritten** — Complete rewrite to support dual backends (PostgreSQL + SQLite). All SQL is now encapsulated in database.py; app.py no longer contains any raw SQL.
+- **All CRUD moved to database.py** — New functions: `get_entries()`, `create_entry()`, `create_entries()`, `update_entry()`, `delete_entry()`, `clear_month()`, `verify_user()`, `get_user_display_name()`.
+- **render.yaml simplified** — Removed persistent disk config (no longer needed with external PostgreSQL). `DATABASE_URL` is set in the Render dashboard.
+- **requirements.txt** — Added `psycopg2-binary>=2.9` for PostgreSQL connectivity.
+
+### Technical
+- `database.py`: `_PH` constant handles `?` (SQLite) vs `%s` (PostgreSQL) placeholder differences; `_row_to_dict()` converts PostgreSQL datetime objects to strings for JSON serialization; `_BACKEND` flag selects code paths at import time
+- `app.py`: Zero raw SQL — all database operations go through `database.py` functions; removed `INSERT_SQL` constant and `get_db()` import; imports are now specific function names
+- `app.js`: `verifySession()` returns `{ valid, userCount }`; `showAuthScreen(showRegister)` toggles login/register form; `init()` uses `userCount === 0` to auto-show registration
+- `render.yaml`: Removed `disk` block; added `DATABASE_URL` documentation comment
+
+### Setup (Render + Neon)
+1. Create a free PostgreSQL database at [neon.tech](https://neon.tech)
+2. Copy the connection string (starts with `postgresql://...`)
+3. In Render dashboard → Environment → Add `DATABASE_URL` with the connection string
+4. Deploy — the app auto-creates tables on first startup
+
+---
+
 ## v4.0.0 — Mobile-First Redesign & Bug Fixes (2026-04-09)
 
 ### Bugs Fixed

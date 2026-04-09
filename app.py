@@ -21,7 +21,19 @@ from flask import Flask, render_template, request, jsonify, Response
 
 from openpyxl import load_workbook
 
-from database import get_db, init_db, create_user, authenticate_user
+from database import (
+    init_db,
+    create_user,
+    authenticate_user,
+    verify_user,
+    get_user_count,
+    get_user_display_name,
+    get_entries,
+    create_entries,
+    update_entry,
+    delete_entry,
+    clear_month,
+)
 from routes_data import (
     BRANCHES,
     MILEAGE_TABLE,
@@ -116,15 +128,6 @@ def _build_entry_values(data, user_id, *, override_origin=None,
     ), None
 
 
-INSERT_SQL = """
-    INSERT INTO entries
-        (user_id, year, month, day, date, origin_branch, destination_branch,
-         route_name, miles, reimbursement_amount, business_purpose, notes,
-         created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-"""
-
-
 # ---------------------------------------------------------------------------
 # Pages
 # ---------------------------------------------------------------------------
@@ -177,15 +180,14 @@ def api_login():
 
     user = authenticate_user(pin)
     if user is None:
-        # Check if ANY users exist to give a more helpful error message
-        from database import get_user_count
         count = get_user_count()
         if count == 0:
             return jsonify({
                 "error": "No accounts exist yet. Please create an account first."
             }), 401
         return jsonify({
-            "error": "No account found for that PIN. Tap 'Create an account' to register."
+            "error": "No account found for that PIN. "
+                     "Tap 'Create an account' to register."
         }), 401
 
     return jsonify({
@@ -209,15 +211,8 @@ def api_verify():
     if not user_id:
         return jsonify({"valid": False, "user_count": 0}), 400
 
-    conn = get_db()
-    try:
-        user = conn.execute(
-            "SELECT id, display_name FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-        count_row = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()
-        user_count = count_row["cnt"] if count_row else 0
-    finally:
-        conn.close()
+    user = verify_user(user_id)
+    user_count = get_user_count()
 
     if user:
         return jsonify({
@@ -236,7 +231,6 @@ def api_auth_status():
     Used on first load (no stored session) to decide whether to show
     the login form or the registration form.
     """
-    from database import get_user_count
     count = get_user_count()
     return jsonify({"user_count": count})
 
@@ -293,18 +287,7 @@ def api_entries():
     if not year or not month:
         return jsonify({"error": "year and month are required"}), 400
 
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            """SELECT * FROM entries
-               WHERE user_id = ? AND year = ? AND month = ?
-               ORDER BY day, id""",
-            (user_id, year, month),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    entries = [dict(r) for r in rows]
+    entries = get_entries(user_id, year, month)
     total_miles = round(sum(e["miles"] for e in entries), 2)
     total_reimbursement = round(
         sum(e["reimbursement_amount"] for e in entries), 2
@@ -335,48 +318,29 @@ def api_create_entry():
     if err:
         return jsonify({"errors": [err]}), 400
 
-    conn = get_db()
-    try:
-        created = []
+    # Collect all inserts (main entry + optional return trip)
+    all_values = [values]
 
-        # --- Main entry ---
-        cursor = conn.execute(INSERT_SQL, values)
-        main_id = cursor.lastrowid
-        main_row = conn.execute(
-            "SELECT * FROM entries WHERE id = ?", (main_id,)
-        ).fetchone()
-        created.append(dict(main_row))
-
-        # --- Return trip (if requested) ---
-        if data.get("include_return"):
-            return_routes = get_routes(
-                data["destination_branch"], data["origin_branch"]
+    if data.get("include_return"):
+        return_routes = get_routes(
+            data["destination_branch"], data["origin_branch"]
+        )
+        if return_routes:
+            return_route = next(
+                (r for r in return_routes
+                 if r["route"] == data["route_name"]),
+                return_routes[0],
             )
-            if return_routes:
-                return_route = next(
-                    (r for r in return_routes
-                     if r["route"] == data["route_name"]),
-                    return_routes[0],
-                )
+            ret_values, ret_err = _build_entry_values(
+                data, user_id,
+                override_origin=data["destination_branch"],
+                override_dest=data["origin_branch"],
+                override_route=return_route["route"],
+            )
+            if ret_values and not ret_err:
+                all_values.append(ret_values)
 
-                ret_values, ret_err = _build_entry_values(
-                    data, user_id,
-                    override_origin=data["destination_branch"],
-                    override_dest=data["origin_branch"],
-                    override_route=return_route["route"],
-                )
-                if ret_values and not ret_err:
-                    cursor2 = conn.execute(INSERT_SQL, ret_values)
-                    ret_id = cursor2.lastrowid
-                    ret_row = conn.execute(
-                        "SELECT * FROM entries WHERE id = ?", (ret_id,)
-                    ).fetchone()
-                    created.append(dict(ret_row))
-
-        conn.commit()
-    finally:
-        conn.close()
-
+    created = create_entries(all_values)
     return jsonify({"entries": created, "count": len(created)}), 201
 
 
@@ -409,32 +373,16 @@ def api_update_entry(entry_id):
             f"{data['destination_branch']} via {data['route_name']}"
         )
     notes = data.get("notes", "").strip()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    conn = get_db()
-    try:
-        conn.execute(
-            """UPDATE entries
-               SET year = ?, month = ?, day = ?, date = ?, origin_branch = ?,
-                   destination_branch = ?, route_name = ?, miles = ?,
-                   reimbursement_amount = ?, business_purpose = ?, notes = ?,
-                   updated_at = ?
-               WHERE id = ? AND user_id = ?""",
-            (year, month, day, date_str, data["origin_branch"],
-             data["destination_branch"], data["route_name"], miles,
-             reimbursement, purpose, notes, now, entry_id, user_id),
-        )
-        conn.commit()
-        row = conn.execute(
-            "SELECT * FROM entries WHERE id = ? AND user_id = ?",
-            (entry_id, user_id),
-        ).fetchone()
-    finally:
-        conn.close()
+    row = update_entry(
+        entry_id, user_id, year, month, day, date_str,
+        data["origin_branch"], data["destination_branch"],
+        data["route_name"], miles, reimbursement, purpose, notes,
+    )
 
     if row is None:
         return jsonify({"error": "Entry not found"}), 404
-    return jsonify(dict(row))
+    return jsonify(row)
 
 
 @app.route("/api/entries/<int:entry_id>", methods=["DELETE"])
@@ -443,19 +391,8 @@ def api_delete_entry(entry_id):
     """Delete a single entry (must belong to the current user)."""
     user_id = get_user_id()
 
-    conn = get_db()
-    try:
-        row = conn.execute(
-            "SELECT id FROM entries WHERE id = ? AND user_id = ?",
-            (entry_id, user_id),
-        ).fetchone()
-        if row is None:
-            return jsonify({"error": "Entry not found"}), 404
-        conn.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
-        conn.commit()
-    finally:
-        conn.close()
-
+    if not delete_entry(entry_id, user_id):
+        return jsonify({"error": "Entry not found"}), 404
     return jsonify({"deleted": entry_id})
 
 
@@ -471,17 +408,7 @@ def api_clear_month():
     if not year or not month:
         return jsonify({"error": "year and month are required"}), 400
 
-    conn = get_db()
-    try:
-        result = conn.execute(
-            "DELETE FROM entries WHERE user_id = ? AND year = ? AND month = ?",
-            (user_id, year, month),
-        )
-        conn.commit()
-        deleted = result.rowcount
-    finally:
-        conn.close()
-
+    deleted = clear_month(user_id, year, month)
     return jsonify({"deleted_count": deleted})
 
 
@@ -498,17 +425,7 @@ def api_export_csv():
     if not year or not month:
         return jsonify({"error": "year and month are required"}), 400
 
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            """SELECT * FROM entries
-               WHERE user_id = ? AND year = ? AND month = ?
-               ORDER BY day, id""",
-            (user_id, year, month),
-        ).fetchall()
-    finally:
-        conn.close()
-
+    rows = get_entries(user_id, year, month)
     month_name = calendar.month_name[month]
     filename = f"mileage_{month_name}_{year}.csv"
 
@@ -563,22 +480,8 @@ def api_export_excel():
     if not year or not month:
         return jsonify({"error": "year and month are required"}), 400
 
-    conn = get_db()
-    try:
-        rows = conn.execute(
-            """SELECT * FROM entries
-               WHERE user_id = ? AND year = ? AND month = ?
-               ORDER BY day, id""",
-            (user_id, year, month),
-        ).fetchall()
-
-        user_row = conn.execute(
-            "SELECT display_name FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-    finally:
-        conn.close()
-
-    display_name = user_row["display_name"] if user_row else ""
+    rows = get_entries(user_id, year, month)
+    display_name = get_user_display_name(user_id)
     month_name = calendar.month_name[month]
     filename = f"expense_reimbursement_{month_name}_{year}.xlsx"
 
@@ -673,4 +576,4 @@ def api_export_excel():
 # Run
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=True)
