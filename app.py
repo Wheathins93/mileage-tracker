@@ -177,6 +177,13 @@ def api_login():
 
     user = authenticate_user(pin)
     if user is None:
+        # Check if ANY users exist to give a more helpful error message
+        from database import get_user_count
+        count = get_user_count()
+        if count == 0:
+            return jsonify({
+                "error": "No accounts exist yet. Please create an account first."
+            }), 401
         return jsonify({
             "error": "No account found for that PIN. Tap 'Create an account' to register."
         }), 401
@@ -189,20 +196,26 @@ def api_login():
 
 @app.route("/api/auth/verify", methods=["POST"])
 def api_verify():
-    """Verify that a stored user_id is still valid."""
+    """Verify that a stored user_id is still valid.
+
+    Also returns ``user_count`` so the frontend can decide whether to
+    show the login form or the register form.
+    """
     data = request.get_json()
     if not data:
-        return jsonify({"valid": False}), 400
+        return jsonify({"valid": False, "user_count": 0}), 400
 
     user_id = data.get("user_id", "").strip()
     if not user_id:
-        return jsonify({"valid": False}), 400
+        return jsonify({"valid": False, "user_count": 0}), 400
 
     conn = get_db()
     try:
         user = conn.execute(
             "SELECT id, display_name FROM users WHERE id = ?", (user_id,)
         ).fetchone()
+        count_row = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()
+        user_count = count_row["cnt"] if count_row else 0
     finally:
         conn.close()
 
@@ -211,8 +224,21 @@ def api_verify():
             "valid": True,
             "user_id": user["id"],
             "display_name": user["display_name"],
+            "user_count": user_count,
         })
-    return jsonify({"valid": False}), 401
+    return jsonify({"valid": False, "user_count": user_count}), 401
+
+
+@app.route("/api/auth/status")
+def api_auth_status():
+    """Check if any registered users exist.
+
+    Used on first load (no stored session) to decide whether to show
+    the login form or the registration form.
+    """
+    from database import get_user_count
+    count = get_user_count()
+    return jsonify({"user_count": count})
 
 
 # ---------------------------------------------------------------------------

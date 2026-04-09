@@ -189,8 +189,22 @@
         localStorage.removeItem("mileage_home_branch");
     }
 
+    /**
+     * Verify the stored session with the server.
+     * Returns { valid: boolean, userCount: number }.
+     * userCount tells us if ANY users exist (used to decide login vs register form).
+     */
     async function verifySession() {
-        if (!state.userId) return false;
+        if (!state.userId) {
+            // No stored session — check if any users exist at all
+            try {
+                const res = await fetch("/api/auth/status");
+                const data = await res.json();
+                return { valid: false, userCount: data.user_count || 0 };
+            } catch {
+                return { valid: false, userCount: 0 };
+            }
+        }
         try {
             const res = await fetch("/api/auth/verify", {
                 method: "POST",
@@ -201,18 +215,34 @@
             if (data.valid) {
                 state.displayName = data.display_name;
                 localStorage.setItem(STORAGE_KEY_NAME, data.display_name);
-                return true;
+                return { valid: true, userCount: data.user_count || 0 };
             }
-            return false;
+            return { valid: false, userCount: data.user_count || 0 };
         } catch {
             // Network error — allow offline access if we have a stored id
-            return !!state.userId;
+            return { valid: !!state.userId, userCount: 1 };
         }
     }
 
-    function showAuthScreen() {
+    /**
+     * Show the auth screen.
+     * @param {boolean} showRegister - If true, show the register form instead of login.
+     */
+    function showAuthScreen(showRegister) {
         dom.authScreen.style.display = "";
         dom.appScreen.style.display = "none";
+
+        // Decide which form to show
+        const loginSection = document.getElementById("auth-login-section");
+        const registerSection = document.getElementById("auth-register-section");
+
+        if (showRegister) {
+            loginSection.style.display = "none";
+            registerSection.style.display = "";
+        } else {
+            loginSection.style.display = "";
+            registerSection.style.display = "none";
+        }
     }
 
     function showAppScreen() {
@@ -295,7 +325,7 @@
             "Are you sure you want to sign out? You can log back in with your PIN.",
             () => {
                 clearSession();
-                showAuthScreen();
+                showAuthScreen(false);
                 dom.authLoginPin.value = "";
                 dom.authRegPin.value = "";
                 dom.authRegName.value = "";
@@ -336,13 +366,16 @@
         bindAuthEvents();
         loadStoredSession();
 
-        const valid = await verifySession();
-        if (valid) {
+        const result = await verifySession();
+        if (result.valid) {
             showAppScreen();
             await initTracker();
         } else {
             clearSession();
-            showAuthScreen();
+            // If there are NO users in the DB, show the register form
+            // instead of the login form (avoids confusing 'Welcome Back'
+            // when no one has ever registered).
+            showAuthScreen(/* showRegister */ result.userCount === 0);
         }
     }
 

@@ -7,4 +7,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.4"
-    plan: free
+      - key: DB_PATH
+        value: /opt/render/data/mileage.db
+    disk:
+      name: mileage-data
+      mountPath: /opt/render/data
+      sizeGB: 1
